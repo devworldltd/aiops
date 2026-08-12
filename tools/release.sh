@@ -16,6 +16,8 @@ set -uo pipefail
 
 MODE=release
 if [[ "${1:-}" == "--sync-latest" ]]; then MODE=sync; shift; fi
+# 공개 게시만 재실행(사내 태그는 이미 있음). 공개 push 가 실패했을 때의 복구 경로.
+if [[ "${1:-}" == "--publish-only" ]]; then MODE=publish; shift; fi
 
 TAG="${1:-}"
 [[ -z "$TAG" ]] && { echo "사용: tools/release.sh vX.Y.Z | --sync-latest vX.Y.Z   (DRY=1 로 예행)" >&2; exit 2; }
@@ -53,10 +55,15 @@ VER=$(python3 -c "import json;print(json.load(open('aiops/.claude-plugin/plugin.
   exit 2
 }
 
-git rev-parse -q --verify "refs/tags/$TAG" >/dev/null && {
-  echo "$TAG 태그가 이미 있습니다. 릴리스는 **새 태그**로 냅니다(이력이 감사 기록)." >&2
-  exit 2
-}
+if [[ "$MODE" == publish ]]; then
+  git rev-parse -q --verify "refs/tags/$TAG" >/dev/null || {
+    echo "--publish-only 는 **이미 있는 태그**를 게시합니다. $TAG 태그가 없습니다." >&2; exit 2; }
+else
+  git rev-parse -q --verify "refs/tags/$TAG" >/dev/null && {
+    echo "$TAG 태그가 이미 있습니다. 릴리스는 **새 태그**로 냅니다(이력이 감사 기록)." >&2
+    exit 2
+  }
+fi
 
 [[ -f LICENSE ]] || echo "::warning:: LICENSE 가 없습니다 — 외부 배포 태그에는 있어야 합니다." >&2
 
@@ -70,14 +77,59 @@ echo "  스킬    : $(ls aiops/skills | wc -l | tr -d ' ') · 에이전트 $(ls 
 
 [[ -n "${DRY:-}" ]] && { echo "── DRY=1 — 아무것도 하지 않았습니다."; exit 0; }
 
-# ── 태그 생성·이동 ───────────────────────────────────────────────────
-git tag -a "$TAG" -m "$TAG"
-git push origin "$TAG"
-
-# `latest` 는 **이동하는 포인터**다(경량 태그). vX.Y.Z 와 달리 이력이 아니라 별칭이다.
-git tag -f latest "$TAG^{commit}" >/dev/null
-git push -f origin latest
+# ── 태그 생성·이동 (publish 모드에서는 건너뛴다 — 이미 있다) ──────────
+if [[ "$MODE" != publish ]]; then
+  git tag -a "$TAG" -m "$TAG"
+  git push origin "$TAG"
+  # `latest` 는 **이동하는 포인터**다(경량 태그). vX.Y.Z 와 달리 이력이 아니라 별칭이다.
+  git tag -f latest "$TAG^{commit}" >/dev/null
+  git push -f origin latest
+else
+  echo "── --publish-only: 사내 태그 생성 건너뜀 ($TAG 이미 존재) ──"
+fi
 
 echo "✓ $TAG 생성 · latest → $(git rev-parse --short "$TAG^{commit}") 이동 완료."
+
+# ── 공개본 게시 ──────────────────────────────────────────────────────
+# 왜 스크립트에 넣나: 수동이면 잊는다. 잊으면 `#latest` 를 핀한 외부 사용자가 **옛 버전을 최신이라
+#   믿는다** — 실패처럼 보이지 않는 종류의 사고다(이 레포가 버전·ref 로 이미 겪었다).
+# 왜 그냥 push 하지 않나: 사내 히스토리에는 정리 이전의 내부 리소스명(도메인·DB 이름·인증 서비스명)이
+#   남아 있다. 전진 미러를 밀면 현재 트리가 깨끗해도 git 이력에서 영구히 조회된다.
+#   그래서 **릴리스 트리만** 공개 레포의 히스토리 위에 새 커밋으로 얹는다.
+PUBLIC=$(git config --get aiops.publicRemote || true)
+if [[ -z "$PUBLIC" ]]; then
+  echo "  ℹ️ 공개본 게시 건너뜀 — 설정되지 않음."
+  echo "     활성화: git config aiops.publicRemote https://github.com/<owner>/<repo>.git"
+else
+  echo "── 공개본 게시 → $PUBLIC ──"
+  TMP=$(mktemp -d) || exit 2
+  trap 'rm -rf "$TMP"' EXIT
+
+  if ! git clone -q "$PUBLIC" "$TMP/pub" 2>/dev/null; then
+    echo "  ❌ 공개 레포 clone 실패 — 권한/URL 확인. **사내 태그는 이미 밀렸다**(위 참조)." >&2
+    echo "     수동 복구: 이 스크립트를 --publish-only $TAG 로 다시 실행." >&2
+    exit 1
+  fi
+
+  # 릴리스 트리로 **완전 교체**(삭제된 파일도 반영). .git 은 보존한다.
+  find "$TMP/pub" -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+  git archive "$TAG" | tar -x -C "$TMP/pub"
+
+  if [[ -z "$(git -C "$TMP/pub" status --porcelain)" ]]; then
+    echo "  ℹ️ 공개본이 이미 이 트리와 동일 — 커밋 없음. 태그만 맞춘다."
+  else
+    git -C "$TMP/pub" add -A
+    git -C "$TMP/pub" commit -q -m "aiops $TAG
+
+사내 정본의 $TAG 릴리스 트리. 개발 이력은 공개하지 않는다(README 참조)."
+  fi
+
+  git -C "$TMP/pub" tag -f "$TAG" >/dev/null
+  git -C "$TMP/pub" tag -f latest >/dev/null
+  git -C "$TMP/pub" push -q origin HEAD:main
+  git -C "$TMP/pub" push -qf origin "$TAG" latest
+  echo "  ✓ 공개본 $TAG · latest 게시 완료."
+fi
+
 echo "  소비자: #$TAG 핀(권장) 또는 #latest(자동 추종)."
 echo "  ⚠️ #latest 사용자도 마켓플레이스 재등록 또는 update 가 필요합니다 — 자동으로 당겨오지 않습니다."

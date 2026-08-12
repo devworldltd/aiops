@@ -62,19 +62,31 @@ aiops-v1/
 
 ## 설치 (소비 프로젝트)
 
-**두 가지 채널**이 있다. 팀이라면 핀을, 혼자 쓰며 늘 최신을 원하면 `latest` 를 고른다.
+### 어디서 받나 (두 레포)
+
+| | URL | 누가 |
+|---|---|---|
+| **공개본** | `https://github.com/devworldltd/aiops.git` | 외부 사용자 — 누구나 |
+| 사내 정본 | `https://git.devworld.co.kr/devworld-ltd/aiops-v1.git` | 사내(Cloudflare Access 필요) |
+
+내용은 같다. 공개본에는 **릴리스 트리만 새 히스토리로** 게시된다(사내 이력은 공개하지 않는다).
+
+### 어느 ref 를 핀하나 (두 채널)
 
 | 채널 | ref | 성격 |
 |---|---|---|
-| **고정 (권장)** | `#v1.3.2` | 그 커밋에 못 박힌다. 언제 무엇이 바뀌는지 팀이 통제한다 |
+| **고정 (권장)** | `#v1.5.2` | 그 커밋에 못 박힌다. 언제 무엇이 바뀌는지 팀이 통제한다 |
 | **최신 추종** | `#latest` | 새 릴리스가 나오면 그 태그로 **이동하는 포인터**. 릴리스마다 재등록 없이 `update` 로 따라간다 |
 
 ```sh
-# 1. 마켓플레이스 등록 — 고정(권장)
-claude plugin marketplace add https://github.com/devworldltd/aiops.git#v1.3.2
+# 1. 마켓플레이스 등록 — 공개본 · 고정(권장)
+claude plugin marketplace add https://github.com/devworldltd/aiops.git#v1.5.2
 
-# 또는 최신 추종
+# 공개본 · 최신 추종
 claude plugin marketplace add https://github.com/devworldltd/aiops.git#latest
+
+# 사내에서는 Gitea 정본을 핀한다 (같은 태그 규약)
+claude plugin marketplace add https://git.devworld.co.kr/devworld-ltd/aiops-v1.git#v1.5.2
 
 # 2. 플러그인 활성화
 claude plugin install aiops@aiops
@@ -88,7 +100,7 @@ claude plugin install aiops@aiops
 ```json
 {
   "extraKnownMarketplaces": {
-    "aiops": { "source": { "source": "git", "url": "https://github.com/devworldltd/aiops.git", "ref": "v1.3.0" } }
+    "aiops": { "source": { "source": "git", "url": "https://git.devworld.co.kr/devworld-ltd/aiops-v1.git", "ref": "v1.3.0" } }
   },
   "enabledPlugins": { "aiops@aiops": true }
 }
@@ -109,7 +121,7 @@ claude plugin install aiops@aiops     # 새 version 이면 새 캐시 디렉토�
 
 ```sh
 claude plugin marketplace remove aiops
-claude plugin marketplace add https://github.com/devworldltd/aiops.git#<새태그>
+claude plugin marketplace add https://git.devworld.co.kr/devworld-ltd/aiops-v1.git#<새태그>
 claude plugin install aiops@aiops
 ```
 
@@ -136,17 +148,29 @@ ls ~/.claude/plugins/cache/aiops/aiops/<버전>/skills/ | wc -l    # 32
 
 ```sh
 # 0) 버전 올림은 PR 로 main 에 먼저 머지한다 (plugin.json 의 version)
-DRY=1 tools/release.sh v1.4.0     # 무엇이 나갈지 확인
-tools/release.sh v1.4.0           # vX.Y.Z 생성 + latest 이동 + 푸시
+DRY=1 tools/release.sh v1.6.0     # 무엇이 나갈지 확인
+tools/release.sh v1.6.0           # 사내 태그 + latest + **공개본 게시**까지
 
-tools/release.sh --sync-latest v1.3.2   # latest 가 드리프트했을 때 되맞추기
+tools/release.sh --sync-latest v1.5.2    # latest 가 드리프트했을 때 되맞추기
+tools/release.sh --publish-only v1.5.2   # 공개 게시만 재실행(사내 태그는 이미 있을 때)
 ```
 
-검사 항목: main 체크아웃 · 클린 트리 · `origin/main` 동기화 · **`plugin.json` version 과 태그 일치** · 태그 중복(릴리스는 언제나 새 태그로) · `LICENSE` 존재.
+검사 항목: main 체크아웃 · 클린 트리 · `origin/main` 동기화 · **`plugin.json` version 과 태그 일치** ·
+태그 중복(릴리스는 언제나 새 태그로) · `LICENSE` 존재.
+
+### 공개본 게시가 릴리스에 묶여 있다
+
+`git config aiops.publicRemote <url>` 이 설정돼 있으면 릴리스가 공개 레포까지 갱신한다.
+**수동이면 잊는다** — 잊으면 `#latest` 를 핀한 외부 사용자가 옛 버전을 최신이라 믿는다.
+
+게시 방식은 **전진 미러가 아니다.** 공개 레포를 clone 해서 그 히스토리 위에 릴리스 트리를
+새 커밋으로 얹고 태그를 옮긴다. 사내 이력에는 정리 이전의 내부 리소스명이 남아 있어 그대로 밀지 않는다.
+
+미설정이면 그 단계를 건너뛰고 활성화 방법을 안내한다(포크가 엉뚱한 곳에 push 하지 않게).
 
 ## 외부 사용자에게 — 알고 시작할 것
 
-**① 이 레포는 공개 배포본이다.** 개발 정본은 사내 Gitea(비공개)이며, 여기에는 **릴리스 시점의 트리가 새 히스토리로** 게시된다. 이슈·PR 은 이 레포에서 받는다.
+**① 공개본을 쓴다.** `github.com/devworldltd/aiops` — 누구나 clone 할 수 있다. 사내 Gitea 정본은 Cloudflare Access 뒤이므로 외부에서 접근되지 않는다. 이슈·PR 은 공개 레포에서 받는다.
 
 **② 기본 스택 가정이 남아 있다.** `/aiops:setup` 이 만든 `agent_hints` 로 에이전트는 적응하지만, 일부 스킬 본문은 아직 FastAPI·Alembic·pytest·Docker 를 기본값으로 서술한다(`devflow`·`qa-check`·`tech-spec` 등). 그 스택이 아니면 **해당 STEP 을 스킵하거나 범위를 좁혀야** 한다. 감지 기반으로 이미 정리된 스킬: `focus`·`unfocus`·`explain-app`.
 
