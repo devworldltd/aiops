@@ -1,0 +1,5 @@
+# 홈/시작 화면 (smoke)
+appId: ${MAESTRO_APP_ID}
+---
+- launchApp
+- assertVisible: "로그인"   # 또는 로그인 후 홈

@@ -1,0 +1,10 @@
+# 메인 네비게이션 검증
+appId: ${MAESTRO_APP_ID}
+---
+- runFlow: 01-login.yaml
+- tapOn: "메뉴"
+- assertVisible: "프로필"
+- assertVisible: "설정"
+- tapOn: "프로필"
+- assertVisible:
+    id: "profile_screen"

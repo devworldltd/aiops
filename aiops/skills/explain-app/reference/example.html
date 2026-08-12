@@ -1,0 +1,802 @@
+<!-- 예시 문서 — 가상의 앱 "docsnap"(스캔 PDF → 마크다운)을 대상으로 쓴 기준 사례다.
+     실제 프로젝트의 문서가 아니며, 도메인·리소스 이름도 가상이다.
+     이 파일은 **구조·톤·SVG 관용구의 본**으로만 읽는다. 내용을 그대로 복사하지 말 것. -->
+<title>docsnap 구조 해설 — 스캔 문서가 마크다운이 되기까지</title>
+
+<style>
+  :root {
+    --paper: #FAF9F7;
+    --card: #FFFFFF;
+    --ink: #191A1D;
+    --ink-2: #5C5F66;
+    --ink-3: #8A8D95;
+    --rule: #E3E0DA;
+    --rule-2: #F0EDE7;
+    --cf: #B0530F;
+    --cf-soft: #F7EBDF;
+    --mac: #1F6577;
+    --mac-soft: #E2EEF1;
+    --warn: #8B1F3E;
+    --warn-soft: #F8E7EC;
+    --sans: "Pretendard Variable", Pretendard, -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Segoe UI", Roboto, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --measure: 40rem;
+    --wide: 72rem;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper: #14151A;
+      --card: #1B1D23;
+      --ink: #EAE9E5;
+      --ink-2: #9DA0A8;
+      --ink-3: #71757E;
+      --rule: #2C2F37;
+      --rule-2: #23262C;
+      --cf: #E89550;
+      --cf-soft: #3A2A1B;
+      --mac: #6BB8C9;
+      --mac-soft: #16313A;
+      --warn: #E5849F;
+      --warn-soft: #3A1D27;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper: #14151A;
+    --card: #1B1D23;
+    --ink: #EAE9E5;
+    --ink-2: #9DA0A8;
+    --ink-3: #71757E;
+    --rule: #2C2F37;
+    --rule-2: #23262C;
+    --cf: #E89550;
+    --cf-soft: #3A2A1B;
+    --mac: #6BB8C9;
+    --mac-soft: #16313A;
+    --warn: #E5849F;
+    --warn-soft: #3A1D27;
+  }
+
+  :root[data-theme="light"] {
+    --paper: #FAF9F7;
+    --card: #FFFFFF;
+    --ink: #191A1D;
+    --ink-2: #5C5F66;
+    --ink-3: #8A8D95;
+    --rule: #E3E0DA;
+    --rule-2: #F0EDE7;
+    --cf: #B0530F;
+    --cf-soft: #F7EBDF;
+    --mac: #1F6577;
+    --mac-soft: #E2EEF1;
+    --warn: #8B1F3E;
+    --warn-soft: #F8E7EC;
+  }
+
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 17px;
+    line-height: 1.85;
+    word-break: keep-all;
+    overflow-wrap: anywhere;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .page {
+    max-width: var(--wide);
+    margin: 0 auto;
+    padding: 4rem 1.5rem 6rem;
+    display: flex;
+    flex-direction: column;
+    gap: 4rem;
+  }
+
+  .prose { max-width: var(--measure); display: flex; flex-direction: column; gap: 1.1rem; }
+
+  /* ── 타이포 스케일 ───────────────────────────── */
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+  }
+  h1 {
+    font-size: clamp(2.1rem, 5vw, 3.1rem);
+    line-height: 1.22;
+    letter-spacing: -0.03em;
+    font-weight: 800;
+    text-wrap: balance;
+    margin: 0.4rem 0 0;
+  }
+  .lede { font-size: 1.15rem; color: var(--ink-2); line-height: 1.8; }
+  h2 {
+    font-size: clamp(1.45rem, 3vw, 1.9rem);
+    line-height: 1.3;
+    letter-spacing: -0.02em;
+    font-weight: 750;
+    text-wrap: balance;
+    margin: 0;
+  }
+  h3 {
+    font-size: 1.05rem;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    margin: 0;
+  }
+  p { margin: 0; }
+  strong { font-weight: 700; }
+  code, .mono { font-family: var(--mono); font-size: 0.88em; }
+  code {
+    background: var(--rule-2);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    padding: 0.08em 0.36em;
+  }
+
+  header.hero {
+    display: flex;
+    flex-direction: column;
+    gap: 1.1rem;
+    max-width: var(--measure);
+  }
+  .hero-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1.5rem;
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    color: var(--ink-3);
+    border-top: 1px solid var(--rule);
+    padding-top: 0.9rem;
+    margin-top: 0.5rem;
+  }
+
+  /* ── 섹션 ─────────────────────────────────────── */
+  section { display: flex; flex-direction: column; gap: 1.6rem; }
+  .sec-head { display: flex; flex-direction: column; gap: 0.5rem; max-width: var(--measure); }
+
+  /* ── 위치 칩: 이 문서의 색 체계 ────────────────── */
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-family: var(--mono);
+    font-size: 0.74rem;
+    letter-spacing: 0.04em;
+    padding: 0.15em 0.55em;
+    border-radius: 999px;
+    border: 1px solid currentColor;
+    white-space: nowrap;
+  }
+  .chip.cf { color: var(--cf); background: var(--cf-soft); }
+  .chip.mac { color: var(--mac); background: var(--mac-soft); }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 0.75rem 1.25rem; align-items: center; }
+
+  /* ── 도형 ─────────────────────────────────────── */
+  figure {
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.9rem;
+  }
+  .figframe {
+    background: var(--card);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    padding: 1.4rem 1.2rem;
+    overflow-x: auto;
+  }
+  .figframe svg { display: block; max-width: 100%; height: auto; min-width: 0; }
+  .figframe.scroll svg { min-width: 46rem; }
+  figcaption {
+    font-size: 0.9rem;
+    color: var(--ink-2);
+    line-height: 1.7;
+    max-width: var(--measure);
+  }
+  figcaption b { color: var(--ink); font-weight: 700; }
+
+  /* ── 표 ───────────────────────────────────────── */
+  .tablewrap { overflow-x: auto; border: 1px solid var(--rule); border-radius: 6px; background: var(--card); }
+  table { border-collapse: collapse; width: 100%; font-size: 0.93rem; min-width: 34rem; }
+  th, td { text-align: left; padding: 0.72rem 1rem; border-bottom: 1px solid var(--rule-2); vertical-align: top; line-height: 1.6; }
+  thead th {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    font-weight: 500;
+    border-bottom: 1px solid var(--rule);
+  }
+  tbody tr:last-child td { border-bottom: 0; }
+  td.name { font-weight: 650; white-space: nowrap; }
+  .num { font-variant-numeric: tabular-nums; }
+
+  /* ── 숫자 카드 ────────────────────────────────── */
+  .facts {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr));
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .fact { background: var(--card); padding: 1.1rem 1rem; display: flex; flex-direction: column; gap: 0.15rem; }
+  .fact dt { font-size: 0.78rem; color: var(--ink-3); order: 2; line-height: 1.5; }
+  .fact dd {
+    margin: 0;
+    order: 1;
+    font-size: 1.5rem;
+    font-weight: 750;
+    letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
+  }
+  .fact dd span { font-size: 0.9rem; font-weight: 600; color: var(--ink-2); }
+
+  /* ── 주의 블록 ────────────────────────────────── */
+  .notes { display: flex; flex-direction: column; gap: 0.9rem; }
+  .note {
+    display: grid;
+    grid-template-columns: 1.6rem 1fr;
+    gap: 0.2rem 0.7rem;
+    background: var(--card);
+    border: 1px solid var(--rule);
+    border-left: 3px solid var(--warn);
+    border-radius: 4px;
+    padding: 1rem 1.1rem;
+    font-size: 0.95rem;
+    line-height: 1.75;
+  }
+  .note .mark { color: var(--warn); font-weight: 800; grid-row: span 2; line-height: 1.6; }
+  .note h3 { grid-column: 2; }
+  .note p { grid-column: 2; color: var(--ink-2); }
+
+  ul.plain { margin: 0; padding-left: 1.15rem; display: flex; flex-direction: column; gap: 0.55rem; }
+  ul.plain li::marker { color: var(--ink-3); }
+
+  hr { border: 0; border-top: 1px solid var(--rule); margin: 0; }
+
+  footer {
+    max-width: var(--measure);
+    font-size: 0.88rem;
+    color: var(--ink-3);
+    line-height: 1.75;
+    border-top: 1px solid var(--rule);
+    padding-top: 1.2rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  a { color: inherit; text-decoration-color: var(--ink-3); text-underline-offset: 0.2em; }
+  a:focus-visible, :focus-visible { outline: 2px solid var(--cf); outline-offset: 3px; border-radius: 2px; }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .figframe { transition: border-color 160ms ease; }
+  }
+</style>
+
+<div class="page">
+
+  <header class="hero">
+    <p class="eyebrow">앱별 구조 해설 시리즈 · 예시</p>
+    <h1>스캔한 종이가<br>마크다운이 되기까지</h1>
+    <p class="lede">
+      <strong>docsnap</strong> 는 스캔한 PDF·사진을 표와 제목이 살아 있는 텍스트 문서로 바꿔 줍니다.
+      이 글은 그 과정에서 <em>누가 무엇을 하는지</em>를 그림으로 설명합니다.
+      개발 지식 없이 읽을 수 있게 썼고, 정확한 이름은 필요한 곳에만 괄호로 덧붙였습니다.
+    </p>
+    <div class="legend">
+      <span class="chip cf">클라우드에서 하는 일</span>
+      <span class="chip mac">LLM 서버에서 하는 일</span>
+    </div>
+    <div class="hero-meta">
+      <span>docsnap.example.com</span>
+      <span>상태 · 베타</span>
+      <span>2026-08-09 기준</span>
+    </div>
+  </header>
+
+  <hr>
+
+  <!-- ══ 1. 전체 여정 ══════════════════════════════════════════ -->
+  <section>
+    <div class="sec-head">
+      <p class="eyebrow">01 — 전체 여정</p>
+      <h2>일은 두 곳에서 나눠 합니다</h2>
+      <p>
+        문서 한 장이 처리되는 동안 작업은 <strong>두 번</strong> 경계를 넘어갑니다.
+        접수·보관·조립·저장은 전 세계에 흩어진 <span class="chip cf">클라우드</span> 가,
+        그림을 실제로 들여다보는 무거운 계산은 <span class="chip mac">LLM 서버</span> 가 맡습니다.
+        사용자는 클라우드만 마주하고, LLM 서버는 늘 뒤에 숨어 있습니다.
+      </p>
+    </div>
+
+    <figure>
+      <div class="figframe scroll">
+        <svg viewBox="-32 0 1432 470" role="img" aria-label="docsnap 처리 여정. 클라우드가 업로드를 받아 보관하고, LLM 서버가 사진을 펴서 글자 위치를 읽고, 클라우드가 근거와 사진을 묶어 질문하고, LLM 서버의 AI가 문서를 다시 쓰고, 클라우드가 결과를 저장한다. 3단계부터 5단계까지는 페이지마다 반복된다.">
+          <defs>
+            <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" style="fill:var(--ink-2)"></path>
+            </marker>
+            <marker id="ah-loop" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" style="fill:var(--ink-3)"></path>
+            </marker>
+          </defs>
+
+          <!-- 지대 -->
+          <rect x="120" y="76" width="1200" height="78" rx="4" style="fill:var(--cf-soft)"></rect>
+          <rect x="120" y="288" width="1200" height="78" rx="4" style="fill:var(--mac-soft)"></rect>
+
+          <!-- 지대 이름 -->
+          <text x="104" y="110" text-anchor="end" style="fill:var(--cf)" font-size="15" font-weight="700">클라우드</text>
+          <text x="104" y="131" text-anchor="end" style="fill:var(--ink-3)" font-size="11.5" font-family="ui-monospace, Menlo, monospace">Cloudflare Workers</text>
+          <text x="104" y="322" text-anchor="end" style="fill:var(--mac)" font-size="15" font-weight="700">LLM 서버</text>
+          <text x="104" y="343" text-anchor="end" style="fill:var(--ink-3)" font-size="11.5" font-family="ui-monospace, Menlo, monospace">전용 연산 서버</text>
+
+          <!-- ① -->
+          <rect x="140" y="84" width="180" height="62" rx="5" style="fill:var(--card);stroke:var(--cf)" stroke-width="1.5"></rect>
+          <text x="230" y="109" text-anchor="middle" style="fill:var(--ink)" font-size="13.5" font-weight="700">① 접수하고 보관</text>
+          <text x="230" y="129" text-anchor="middle" style="fill:var(--ink-2)" font-size="11.5">원본은 잠긴 창고로</text>
+
+          <!-- ② -->
+          <rect x="380" y="296" width="190" height="62" rx="5" style="fill:var(--card);stroke:var(--mac)" stroke-width="1.5"></rect>
+          <text x="475" y="321" text-anchor="middle" style="fill:var(--ink)" font-size="13.5" font-weight="700">② 펴고 글자 위치 읽기</text>
+          <text x="475" y="341" text-anchor="middle" style="fill:var(--ink-2)" font-size="11.5">기울기 보정 + 글자 인식</text>
+
+          <!-- ③ -->
+          <rect x="630" y="84" width="180" height="62" rx="5" style="fill:var(--card);stroke:var(--cf)" stroke-width="1.5"></rect>
+          <text x="720" y="109" text-anchor="middle" style="fill:var(--ink)" font-size="13.5" font-weight="700">③ 근거와 사진 묶기</text>
+          <text x="720" y="129" text-anchor="middle" style="fill:var(--ink-2)" font-size="11.5">AI에게 줄 질문 조립</text>
+
+          <!-- ④ -->
+          <rect x="870" y="296" width="190" height="62" rx="5" style="fill:var(--card);stroke:var(--mac)" stroke-width="1.5"></rect>
+          <text x="965" y="321" text-anchor="middle" style="fill:var(--ink)" font-size="13.5" font-weight="700">④ 문서를 다시 쓰기</text>
+          <text x="965" y="341" text-anchor="middle" style="fill:var(--ink-2)" font-size="11.5">그림을 보는 AI</text>
+
+          <!-- ⑤ -->
+          <rect x="1120" y="84" width="180" height="62" rx="5" style="fill:var(--card);stroke:var(--cf)" stroke-width="1.5"></rect>
+          <text x="1210" y="109" text-anchor="middle" style="fill:var(--ink)" font-size="13.5" font-weight="700">⑤ 한 장씩 저장</text>
+          <text x="1210" y="129" text-anchor="middle" style="fill:var(--ink-2)" font-size="11.5">끝나면 내려받기</text>
+
+          <!-- 대각 화살표 -->
+          <line x1="322" y1="152" x2="386" y2="290" style="stroke:var(--ink-2)" stroke-width="1.6" marker-end="url(#ah)"></line>
+          <line x1="572" y1="290" x2="636" y2="152" style="stroke:var(--ink-2)" stroke-width="1.6" marker-end="url(#ah)"></line>
+          <line x1="812" y1="152" x2="876" y2="290" style="stroke:var(--ink-2)" stroke-width="1.6" marker-end="url(#ah)"></line>
+          <line x1="1062" y1="290" x2="1126" y2="152" style="stroke:var(--ink-2)" stroke-width="1.6" marker-end="url(#ah)"></line>
+
+          <!-- 화살표 라벨 (공통 기준선) -->
+          <text x="354" y="215" text-anchor="middle" style="fill:var(--ink-2)" font-size="11.5">원본 사진</text>
+          <text x="354" y="232" text-anchor="middle" style="fill:var(--ink-3)" font-size="11.5">보내기</text>
+          <text x="604" y="215" text-anchor="middle" style="fill:var(--ink-2)" font-size="11.5">펴진 사진 +</text>
+          <text x="604" y="232" text-anchor="middle" style="fill:var(--ink-3)" font-size="11.5">글자 위치</text>
+          <text x="844" y="215" text-anchor="middle" style="fill:var(--ink-2)" font-size="11.5">사진 +</text>
+          <text x="844" y="232" text-anchor="middle" style="fill:var(--ink-3)" font-size="11.5">읽어낸 근거</text>
+          <text x="1094" y="215" text-anchor="middle" style="fill:var(--ink-2)" font-size="11.5">정리된</text>
+          <text x="1094" y="232" text-anchor="middle" style="fill:var(--ink-3)" font-size="11.5">마크다운</text>
+
+          <!-- 반복 루프 -->
+          <path d="M 1210 84 C 1210 30, 720 30, 720 78" fill="none" style="stroke:var(--ink-3)" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#ah-loop)"></path>
+          <text x="965" y="24" text-anchor="middle" style="fill:var(--ink-3)" font-size="12">페이지마다 반복 — 한 번에 딱 한 장</text>
+
+          <!-- 하단 주석 -->
+          <line x1="120" y1="410" x2="1320" y2="410" style="stroke:var(--rule)" stroke-width="1"></line>
+          <text x="120" y="437" style="fill:var(--ink-3)" font-size="12">원본 파일은 LLM 서버에 남지 않습니다 — 클라우드가 보내 주고, 결과만 돌려받습니다.</text>
+        </svg>
+      </div>
+      <figcaption>
+        <b>경계를 두 번 넘는 것이 이 설계의 핵심입니다.</b>
+        LLM 서버는 스스로 일감을 가져오지 않고, 창고 열쇠도 갖고 있지 않습니다.
+        클라우드가 필요한 것만 건네주고 결과만 받아 오기 때문에, LLM 서버가 멈춰 있어도
+        이미 보관된 문서가 위험해지지 않습니다.
+      </figcaption>
+    </figure>
+  </section>
+
+  <hr>
+
+  <!-- ══ 2. 왜 둘이 함께 ═══════════════════════════════════════ -->
+  <section>
+    <div class="sec-head">
+      <p class="eyebrow">02 — 왜 두 가지 방법을 같이 쓰나</p>
+      <h2>글자 인식과 AI, 하나만 쓰면 각각 다르게 틀립니다</h2>
+      <p>
+        “글자 인식”(OCR)은 <strong>무슨 글자인지</strong>는 정확히 읽지만 표와 제목 같은 <strong>생김새</strong>를 잃어버립니다.
+        반대로 그림을 보는 AI는 생김새는 잘 살리지만 <strong>숫자를 지어냅니다</strong>.
+        그래서 docsnap 는 글자 인식 결과를 <em>근거</em>로 AI에게 함께 넘깁니다 —
+        “네가 새로 읽지 말고, 이 글자들을 제자리에 배치해라”는 뜻입니다.
+      </p>
+    </div>
+
+    <figure>
+      <div class="figframe scroll">
+        <svg viewBox="0 0 1120 340" role="img" aria-label="같은 영수증 한 줄을 세 방법으로 처리한 결과 비교. 글자 인식만 쓰면 표가 사라지고, AI만 쓰면 금액이 3600에서 3500으로 바뀌며, 두 방법을 함께 쓰면 표와 숫자가 모두 정확하다.">
+          <defs>
+            <marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" style="fill:var(--ink-3)"></path>
+            </marker>
+          </defs>
+
+          <!-- 원본 -->
+          <text x="20" y="30" style="fill:var(--ink-3)" font-size="12" font-family="ui-monospace, Menlo, monospace" letter-spacing="1.5">원본 스캔 한 줄</text>
+          <rect x="20" y="42" width="300" height="66" rx="4" style="fill:var(--rule-2);stroke:var(--rule)" stroke-width="1"></rect>
+          <text x="40" y="68" style="fill:var(--ink-2)" font-size="13" font-family="ui-monospace, Menlo, monospace">품목      수량      금액</text>
+          <text x="40" y="92" style="fill:var(--ink)" font-size="13" font-family="ui-monospace, Menlo, monospace">볼펜       12     3,600</text>
+
+          <line x1="170" y1="116" x2="170" y2="150" style="stroke:var(--ink-3)" stroke-width="1.4" marker-end="url(#ah2)"></line>
+          <line x1="170" y1="133" x2="900" y2="133" style="stroke:var(--ink-3)" stroke-width="1.4"></line>
+          <line x1="530" y1="133" x2="530" y2="150" style="stroke:var(--ink-3)" stroke-width="1.4" marker-end="url(#ah2)"></line>
+          <line x1="900" y1="133" x2="900" y2="150" style="stroke:var(--ink-3)" stroke-width="1.4" marker-end="url(#ah2)"></line>
+
+          <!-- 방법 1 -->
+          <rect x="20" y="158" width="300" height="150" rx="5" style="fill:var(--card);stroke:var(--rule)" stroke-width="1.5"></rect>
+          <text x="40" y="184" style="fill:var(--ink)" font-size="13.5" font-weight="700">글자 인식만</text>
+          <text x="40" y="212" style="fill:var(--ink-2)" font-size="12.5" font-family="ui-monospace, Menlo, monospace">품목 수량 금액 볼펜 12 3,600</text>
+          <text x="40" y="256" style="fill:var(--warn)" font-size="12.5" font-weight="700">✕ 표가 사라졌다</text>
+          <text x="40" y="278" style="fill:var(--ink-2)" font-size="12">글자는 맞지만 어디가 제목이고</text>
+          <text x="40" y="295" style="fill:var(--ink-2)" font-size="12">어디가 칸인지 알 수 없다.</text>
+
+          <!-- 방법 2 -->
+          <rect x="380" y="158" width="300" height="150" rx="5" style="fill:var(--card);stroke:var(--rule)" stroke-width="1.5"></rect>
+          <text x="400" y="184" style="fill:var(--ink)" font-size="13.5" font-weight="700">AI 눈만</text>
+          <text x="400" y="212" style="fill:var(--ink-2)" font-size="12.5" font-family="ui-monospace, Menlo, monospace">| 볼펜 | 12 | </text>
+          <text x="497" y="212" style="fill:var(--warn)" font-size="12.5" font-weight="700" font-family="ui-monospace, Menlo, monospace">3,500</text>
+          <text x="553" y="212" style="fill:var(--ink-2)" font-size="12.5" font-family="ui-monospace, Menlo, monospace"> |</text>
+          <text x="400" y="256" style="fill:var(--warn)" font-size="12.5" font-weight="700">✕ 금액이 바뀌었다</text>
+          <text x="400" y="278" style="fill:var(--ink-2)" font-size="12">표는 살렸지만 긴 숫자를</text>
+          <text x="400" y="295" style="fill:var(--ink-2)" font-size="12">그럴듯하게 지어낸다.</text>
+
+          <!-- 방법 3 -->
+          <rect x="740" y="158" width="320" height="150" rx="5" style="fill:var(--card);stroke:var(--mac)" stroke-width="2"></rect>
+          <rect x="740" y="158" width="320" height="150" rx="5" style="fill:var(--mac-soft);opacity:0.45"></rect>
+          <text x="760" y="184" style="fill:var(--mac)" font-size="13.5" font-weight="800">둘이 함께 — docsnap 방식</text>
+          <text x="760" y="212" style="fill:var(--ink)" font-size="12.5" font-family="ui-monospace, Menlo, monospace">| 볼펜 | 12 | 3,600 |</text>
+          <text x="760" y="256" style="fill:var(--mac)" font-size="12.5" font-weight="700">✓ 표도 숫자도 그대로</text>
+          <text x="760" y="278" style="fill:var(--ink-2)" font-size="12">읽은 글자를 근거로 넘기고,</text>
+          <text x="760" y="295" style="fill:var(--ink-2)" font-size="12">AI에게는 배치만 맡긴다.</text>
+        </svg>
+      </div>
+      <figcaption>
+        <b>AI에게 맡기는 일을 좁힌 것이 정확도의 이유입니다.</b>
+        AI가 새로 맡는 일은 “근거로 받은 글자를 제자리에 놓기”와
+        “글자 인식이 못 읽는 것(손글씨·도장·수식) 읽기”뿐입니다.
+      </figcaption>
+    </figure>
+
+    <div class="notes">
+      <div class="note">
+        <span class="mark">!</span>
+        <h3>한글을 읽는 엔진을 실제로 재보고 골랐습니다</h3>
+        <p>
+          처음 쓰려던 오픈소스 엔진(RapidOCR)은 같은 스캔 페이지에서 한글 6줄을 <strong>0줄</strong> 맞혔습니다 —
+          “품목”을 “吾号”처럼 한자로 오독했습니다. 애플 비전(Apple Vision)으로 바꾸자 <strong>6줄 모두</strong> 정확했습니다.
+          원인은 성능이 아니라 언어였습니다: 그 엔진의 기본 모델은 중국어·영어 전용입니다.
+          대신 이 기능은 <strong>특정 플랫폼 전용</strong>이 됐지만, 원래부터 이 서버 전용 실행체라 잃은 것은 없습니다.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <hr>
+
+  <!-- ══ 3. 한 걸음씩 ═══════════════════════════════════════════ -->
+  <section>
+    <div class="sec-head">
+      <p class="eyebrow">03 — 진행 방식</p>
+      <h2>한 번에 한 장씩, 브라우저를 닫아도 이어집니다</h2>
+      <p>
+        AI가 한 페이지를 읽는 데 <strong>20~60초</strong>가 걸립니다. 20쪽 문서라면 10분이 넘고,
+        그렇게 긴 요청은 중간에 끊깁니다. 그래서 “한 번 요청 = 한 걸음”으로 잘게 나눴습니다.
+        어디까지 했는지는 <strong>기억이 아니라 기록에</strong> 남기므로, 창을 닫았다 다시 열어도 그 자리에서 이어집니다.
+      </p>
+    </div>
+
+    <figure>
+      <div class="figframe scroll">
+        <svg viewBox="0 0 1060 250" role="img" aria-label="진행 상태 흐름. 업로드됨에서 준비중, 변환중을 거쳐 완료로 간다. 변환중 상태는 페이지 수만큼 반복되며, 모든 상태는 기록에 저장되어 중단 후 재개할 수 있다.">
+          <defs>
+            <marker id="ah3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" style="fill:var(--ink-2)"></path>
+            </marker>
+          </defs>
+
+          <g font-size="13.5" font-weight="700">
+            <rect x="20" y="70" width="180" height="58" rx="29" style="fill:var(--card);stroke:var(--rule)" stroke-width="1.5"></rect>
+            <text x="110" y="105" text-anchor="middle" style="fill:var(--ink)">업로드됨</text>
+
+            <rect x="270" y="70" width="180" height="58" rx="29" style="fill:var(--card);stroke:var(--mac)" stroke-width="1.5"></rect>
+            <text x="360" y="98" text-anchor="middle" style="fill:var(--ink)">준비중</text>
+            <text x="360" y="116" text-anchor="middle" style="fill:var(--ink-2)" font-size="11.5" font-weight="400">펴고 글자 읽는 중</text>
+
+            <rect x="520" y="70" width="200" height="58" rx="29" style="fill:var(--card);stroke:var(--mac)" stroke-width="2"></rect>
+            <text x="620" y="98" text-anchor="middle" style="fill:var(--ink)">변환중</text>
+            <text x="620" y="116" text-anchor="middle" style="fill:var(--ink-2)" font-size="11.5" font-weight="400">한 걸음 = 한 페이지</text>
+
+            <rect x="790" y="70" width="180" height="58" rx="29" style="fill:var(--card);stroke:var(--cf)" stroke-width="1.5"></rect>
+            <text x="880" y="105" text-anchor="middle" style="fill:var(--ink)">완료</text>
+          </g>
+
+          <line x1="200" y1="99" x2="264" y2="99" style="stroke:var(--ink-2)" stroke-width="1.6" marker-end="url(#ah3)"></line>
+          <line x1="450" y1="99" x2="514" y2="99" style="stroke:var(--ink-2)" stroke-width="1.6" marker-end="url(#ah3)"></line>
+          <line x1="720" y1="99" x2="784" y2="99" style="stroke:var(--ink-2)" stroke-width="1.6" marker-end="url(#ah3)"></line>
+          <text x="752" y="88" text-anchor="middle" style="fill:var(--ink-3)" font-size="11.5">남은 장 없음</text>
+
+          <!-- 자기 반복 -->
+          <path d="M 560 70 C 560 24, 680 24, 680 66" fill="none" style="stroke:var(--mac)" stroke-width="1.6" marker-end="url(#ah3)"></path>
+          <text x="620" y="20" text-anchor="middle" style="fill:var(--mac)" font-size="11.5" font-weight="600">페이지 수만큼</text>
+
+          <!-- 기록 띠 -->
+          <rect x="20" y="168" width="950" height="52" rx="5" style="fill:var(--cf-soft);stroke:var(--cf)" stroke-width="1"></rect>
+          <text x="40" y="190" style="fill:var(--cf)" font-size="12.5" font-weight="700">진행 상태는 전부 기록(D1)에 남습니다</text>
+          <text x="40" y="209" style="fill:var(--ink-2)" font-size="12">창을 닫아도, 서버가 다른 기계로 바뀌어도, 다음 걸음이 그 자리에서 이어집니다. 실패한 3쪽만 다시 시도할 수도 있습니다.</text>
+          <line x1="110" y1="132" x2="110" y2="164" style="stroke:var(--cf);opacity:0.5" stroke-width="1.2" stroke-dasharray="3 3"></line>
+          <line x1="360" y1="132" x2="360" y2="164" style="stroke:var(--cf);opacity:0.5" stroke-width="1.2" stroke-dasharray="3 3"></line>
+          <line x1="620" y1="132" x2="620" y2="164" style="stroke:var(--cf);opacity:0.5" stroke-width="1.2" stroke-dasharray="3 3"></line>
+          <line x1="880" y1="132" x2="880" y2="164" style="stroke:var(--cf);opacity:0.5" stroke-width="1.2" stroke-dasharray="3 3"></line>
+        </svg>
+      </div>
+      <figcaption>
+        <b>진행률을 메모리에 두지 않은 이유가 여기 있습니다.</b>
+        이 서비스는 결과를 기다리며 보는 대화형 도구라, 대기열(큐)을 붙이는 대신 이 방식을 골랐습니다.
+        나중에 “올려두고 나중에 받기” 요구가 생기면 그때 대기열로 옮깁니다.
+      </figcaption>
+    </figure>
+  </section>
+
+  <hr>
+
+  <!-- ══ 4. 문 지키기 ══════════════════════════════════════════ -->
+  <section>
+    <div class="sec-head">
+      <p class="eyebrow">04 — 누가 쓸 수 있나</p>
+      <h2>문은 세 단계로, 막히는 쪽이 기본값입니다</h2>
+      <p>
+        스캔 문서는 계약서·진단서·신분증 사본이 될 수 있습니다.
+        그래서 설정이 빠지거나 확인이 안 되면 <strong>열리는 쪽이 아니라 막히는 쪽</strong>으로 기웁니다.
+      </p>
+    </div>
+
+    <figure>
+      <div class="figframe scroll">
+        <svg viewBox="0 0 1000 210" role="img" aria-label="접근 권한 3단계. 로그인 확인에서 실패하면 로그인 필요, 관리자면 바로 통과, 아니면 사용 신청 여부를 확인해 신청 전이면 거절, 신청 완료면 통과.">
+          <defs>
+            <marker id="ah4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" style="fill:var(--ink-2)"></path>
+            </marker>
+            <marker id="ah4x" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" style="fill:var(--warn)"></path>
+            </marker>
+          </defs>
+
+          <rect x="20" y="60" width="200" height="56" rx="5" style="fill:var(--card);stroke:var(--rule)" stroke-width="1.5"></rect>
+          <text x="120" y="84" text-anchor="middle" style="fill:var(--ink)" font-size="13.5" font-weight="700">① 본인 확인</text>
+          <text x="120" y="103" text-anchor="middle" style="fill:var(--ink-2)" font-size="11.5">포털 계정으로 로그인</text>
+
+          <rect x="310" y="60" width="200" height="56" rx="5" style="fill:var(--card);stroke:var(--rule)" stroke-width="1.5"></rect>
+          <text x="410" y="84" text-anchor="middle" style="fill:var(--ink)" font-size="13.5" font-weight="700">② 관리자인가</text>
+          <text x="410" y="103" text-anchor="middle" style="fill:var(--ink-2)" font-size="11.5">맞으면 바로 통과</text>
+
+          <rect x="600" y="60" width="200" height="56" rx="5" style="fill:var(--card);stroke:var(--rule)" stroke-width="1.5"></rect>
+          <text x="700" y="84" text-anchor="middle" style="fill:var(--ink)" font-size="13.5" font-weight="700">③ 사용 신청했나</text>
+          <text x="700" y="103" text-anchor="middle" style="fill:var(--ink-2)" font-size="11.5">개인도 즉시 신청 가능</text>
+
+          <rect x="880" y="60" width="100" height="56" rx="28" style="fill:var(--mac-soft);stroke:var(--mac)" stroke-width="1.8"></rect>
+          <text x="930" y="95" text-anchor="middle" style="fill:var(--mac)" font-size="14" font-weight="800">통과</text>
+
+          <line x1="220" y1="88" x2="304" y2="88" style="stroke:var(--ink-2)" stroke-width="1.6" marker-end="url(#ah4)"></line>
+          <line x1="510" y1="88" x2="594" y2="88" style="stroke:var(--ink-2)" stroke-width="1.6" marker-end="url(#ah4)"></line>
+          <line x1="800" y1="88" x2="874" y2="88" style="stroke:var(--ink-2)" stroke-width="1.6" marker-end="url(#ah4)"></line>
+          <text x="552" y="78" text-anchor="middle" style="fill:var(--ink-3)" font-size="11">아니오</text>
+
+          <!-- 관리자 지름길 -->
+          <path d="M 410 60 C 410 20, 930 20, 930 56" fill="none" style="stroke:var(--mac)" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#ah4)"></path>
+          <text x="670" y="16" text-anchor="middle" style="fill:var(--mac)" font-size="11.5" font-weight="600">관리자 지름길 — 기록 조회 없이 통과</text>
+
+          <!-- 탈락 -->
+          <line x1="120" y1="120" x2="120" y2="152" style="stroke:var(--warn)" stroke-width="1.5" marker-end="url(#ah4x)"></line>
+          <text x="120" y="172" text-anchor="middle" style="fill:var(--warn)" font-size="12" font-weight="600">“로그인이 필요합니다”</text>
+          <line x1="700" y1="120" x2="700" y2="152" style="stroke:var(--warn)" stroke-width="1.5" marker-end="url(#ah4x)"></line>
+          <text x="700" y="172" text-anchor="middle" style="fill:var(--warn)" font-size="12" font-weight="600">“아직 사용 신청 전입니다”</text>
+        </svg>
+      </div>
+      <figcaption>
+        <b>관리자 지름길이 ③보다 앞에 있는 데는 이유가 있습니다.</b>
+        신청 기록을 읽어야만 관리자가 통과할 수 있다면, 그 기록 저장소에 장애가 났을 때
+        <em>고칠 사람도 못 들어오게</em> 됩니다. 다만 ①본인 확인보다 앞설 수는 없습니다 — 누구인지 모르면 관리자인지도 알 수 없으니까요.
+      </figcaption>
+    </figure>
+  </section>
+
+  <hr>
+
+  <!-- ══ 5. 파기 ═══════════════════════════════════════════════ -->
+  <section>
+    <div class="sec-head">
+      <p class="eyebrow">05 — 30일 뒤</p>
+      <h2>지우는 순서까지 정해져 있습니다</h2>
+      <p>
+        올린 문서와 변환 결과는 <strong>30일 뒤 자동으로 지워집니다.</strong>
+        매일 새벽 3시 40분에 한 번 훑고, 한 번에 최대 500건까지 처리합니다.
+        여기서 순서가 중요합니다 — <strong>원본 파일을 먼저, 기록을 나중에</strong> 지웁니다.
+      </p>
+    </div>
+
+    <figure>
+      <div class="figframe scroll">
+        <svg viewBox="0 0 980 260" role="img" aria-label="파기 순서 비교. 원본을 먼저 지우고 기록을 나중에 지우면 실패해도 다음 날 다시 지울 수 있지만, 기록을 먼저 지우면 원본의 위치를 알 방법이 사라져 파일이 남는다.">
+          <defs>
+            <marker id="ah5" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" style="fill:var(--ink-2)"></path>
+            </marker>
+          </defs>
+
+          <!-- 올바른 순서 -->
+          <text x="20" y="28" style="fill:var(--mac)" font-size="13" font-weight="800">✓ 지금 방식</text>
+          <rect x="20" y="44" width="430" height="86" rx="5" style="fill:var(--card);stroke:var(--mac)" stroke-width="1.5"></rect>
+          <rect x="42" y="66" width="150" height="42" rx="4" style="fill:var(--mac-soft);stroke:var(--mac)" stroke-width="1"></rect>
+          <text x="117" y="92" text-anchor="middle" style="fill:var(--ink)" font-size="12.5" font-weight="600">① 원본 파일</text>
+          <line x1="200" y1="87" x2="266" y2="87" style="stroke:var(--ink-2)" stroke-width="1.5" marker-end="url(#ah5)"></line>
+          <rect x="272" y="66" width="150" height="42" rx="4" style="fill:var(--mac-soft);stroke:var(--mac)" stroke-width="1"></rect>
+          <text x="347" y="92" text-anchor="middle" style="fill:var(--ink)" font-size="12.5" font-weight="600">② 기록</text>
+          <text x="20" y="156" style="fill:var(--ink-2)" font-size="12">중간에 실패해도 기록이 남아 있어</text>
+          <text x="20" y="175" style="fill:var(--ink-2)" font-size="12">다음 날 같은 문서를 다시 만나 또 지웁니다.</text>
+          <text x="20" y="200" style="fill:var(--mac)" font-size="12" font-weight="700">→ 몇 번 반복해도 안전</text>
+
+          <!-- 뒤집으면 -->
+          <text x="530" y="28" style="fill:var(--warn)" font-size="13" font-weight="800">✕ 순서를 뒤집으면</text>
+          <rect x="530" y="44" width="430" height="86" rx="5" style="fill:var(--card);stroke:var(--warn)" stroke-width="1.5"></rect>
+          <rect x="552" y="66" width="150" height="42" rx="4" style="fill:var(--warn-soft);stroke:var(--warn)" stroke-width="1"></rect>
+          <text x="627" y="92" text-anchor="middle" style="fill:var(--ink)" font-size="12.5" font-weight="600">① 기록</text>
+          <line x1="710" y1="87" x2="776" y2="87" style="stroke:var(--ink-2)" stroke-width="1.5" marker-end="url(#ah5)"></line>
+          <rect x="782" y="66" width="150" height="42" rx="4" style="fill:var(--warn-soft);stroke:var(--warn)" stroke-width="1" stroke-dasharray="4 3"></rect>
+          <text x="857" y="92" text-anchor="middle" style="fill:var(--warn)" font-size="12.5" font-weight="600">② 원본 — 실패</text>
+          <text x="530" y="156" style="fill:var(--ink-2)" font-size="12">파일이 어디 있는지는 기록에만 적혀 있습니다.</text>
+          <text x="530" y="175" style="fill:var(--ink-2)" font-size="12">기록을 먼저 지우면 그 주소가 사라집니다.</text>
+          <text x="530" y="200" style="fill:var(--warn)" font-size="12" font-weight="700">→ 지울 수 없는 문서가 영원히 남음</text>
+
+          <line x1="20" y1="228" x2="960" y2="228" style="stroke:var(--rule)" stroke-width="1"></line>
+          <text x="20" y="250" style="fill:var(--ink-3)" font-size="12">파기 기능은 설정을 깜빡해도 켜져 있는 쪽이 기본입니다 — 끄려면 명시적으로 “점검 모드”를 지정해야 합니다.</text>
+        </svg>
+      </div>
+      <figcaption>
+        <b>“설정을 안 했다”가 “개인 문서를 영원히 보관한다”가 되지 않게</b>
+        기본값을 파기 쪽에 두었습니다. 사고 대응이 필요할 때만 명시적으로 점검 모드로 바꿉니다.
+      </figcaption>
+    </figure>
+  </section>
+
+  <hr>
+
+  <!-- ══ 6. 구성 요소 ══════════════════════════════════════════ -->
+  <section>
+    <div class="sec-head">
+      <p class="eyebrow">06 — 등장인물</p>
+      <h2>이 서비스를 이루는 것들</h2>
+      <p>기술 문서에서 마주칠 이름과, 그것이 실제로 하는 일입니다.</p>
+    </div>
+
+    <div class="tablewrap">
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">이름</th>
+            <th scope="col">사는 곳</th>
+            <th scope="col">하는 일</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="name">docsnap 앱<br><span class="mono" style="font-weight:400;color:var(--ink-3);font-size:0.82em">apps/docsnap</span></td>
+            <td><span class="chip cf">클라우드</span></td>
+            <td>화면·접수·전체 진행 지휘. 모든 판단이 여기서 이뤄집니다.</td>
+          </tr>
+          <tr>
+            <td class="name">원본 창고<br><span class="mono" style="font-weight:400;color:var(--ink-3);font-size:0.82em">R2 · SCAN_DOCS</span></td>
+            <td><span class="chip cf">클라우드</span></td>
+            <td>올린 PDF·사진 원본 보관. <strong>공개 주소가 없습니다</strong> — 로그인한 본인만 앱을 통해 꺼냅니다.</td>
+          </tr>
+          <tr>
+            <td class="name">기록 장부<br><span class="mono" style="font-weight:400;color:var(--ink-3);font-size:0.82em">기록 장부 · docsnap-db</span></td>
+            <td><span class="chip cf">클라우드</span></td>
+            <td>문서 정보와 <strong>페이지별</strong> 변환 결과·진행 상태. 어느 모델로 변환했는지도 함께 굳혀 둡니다.</td>
+          </tr>
+          <tr>
+            <td class="name">전처리 브리지<br><span class="mono" style="font-weight:400;color:var(--ink-3);font-size:0.82em">services/docsnap-bridge · :8140</span></td>
+            <td><span class="chip mac">LLM 서버</span></td>
+            <td>PDF를 300dpi 사진으로 펴고, 뒤집힘·기울기를 바로잡고, 애플 비전으로 글자와 그 위치를 읽습니다.</td>
+          </tr>
+          <tr>
+            <td class="name">그림 읽는 AI<br><span class="mono" style="font-weight:400;color:var(--ink-3);font-size:0.82em">qwen2.5vl-ocr16k:72b</span></td>
+            <td><span class="chip mac">LLM 서버</span></td>
+            <td>사진과 근거를 받아 서식이 살아 있는 마크다운으로 다시 씁니다. 우리가 직접 운영하는 모델입니다.</td>
+          </tr>
+          <tr>
+            <td class="name">계정·이용권 확인<br><span class="mono" style="font-weight:400;color:var(--ink-3);font-size:0.82em">계정 서비스</span></td>
+            <td><span class="chip cf">클라우드</span></td>
+            <td>포털 전체가 함께 쓰는 계정 장부. docsnap 는 <strong>읽기만</strong> 합니다.</td>
+          </tr>
+          <tr>
+            <td class="name">야간 청소부<br><span class="mono" style="font-weight:400;color:var(--ink-3);font-size:0.82em">Cron 03:40 KST</span></td>
+            <td><span class="chip cf">클라우드</span></td>
+            <td>보관기간이 지난 문서를 원본·기록 순서로 지웁니다.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <dl class="facts">
+      <div class="fact"><dt>문서 보관기간</dt><dd class="num">30<span>일</span></dd></div>
+      <div class="fact"><dt>페이지 1장 변환 시간</dt><dd class="num">20~60<span>초</span></dd></div>
+      <div class="fact"><dt>스캔 해상도</dt><dd class="num">300<span>dpi</span></dd></div>
+      <div class="fact"><dt>야간 청소 1회 처리량</dt><dd class="num">500<span>건</span></dd></div>
+      <div class="fact"><dt>사용 자격</dt><dd style="font-size:1.15rem">개인 <span>즉시 신청</span></dd></div>
+    </dl>
+  </section>
+
+  <hr>
+
+  <!-- ══ 7. 조용히 넘어가지 않는 것 ════════════════════════════ -->
+  <section>
+    <div class="sec-head">
+      <p class="eyebrow">07 — 설계 원칙</p>
+      <h2>일부러 “조용히 넘어가지” 않게 만든 것들</h2>
+      <p>
+        소프트웨어에서 가장 나쁜 실패는 멈추는 실패가 아니라 <strong>아무 일 없는 척하는 실패</strong>입니다.
+        결과가 조금 이상한데 아무도 원인을 모르는 상태가 그것입니다. docsnap 는 몇 군데를 일부러 “즉시 멈춤”으로 만들었습니다.
+      </p>
+    </div>
+
+    <div class="notes">
+      <div class="note">
+        <span class="mark">1</span>
+        <h3>전처리 브리지가 없으면 그냥 실패합니다</h3>
+        <p>
+          LLM 서버에 닿지 못하면 AI 단독으로 몰래 넘어가지 않고 오류를 냅니다.
+          몰래 넘어갔다면 “왜 표가 깨졌는지”를 사용자도 우리도 알 수 없게 됩니다.
+        </p>
+      </div>
+      <div class="note">
+        <span class="mark">2</span>
+        <h3>한글 인식 엔진도 대체품으로 되돌아가지 않습니다</h3>
+        <p>
+          애플 비전을 못 쓰면 즉시 실패합니다. 예전 엔진으로 몰래 되돌아가면
+          한글 문서가 한자로 채워진 결과가 나오는데, 그게 왜 그런지 아무도 모릅니다.
+        </p>
+      </div>
+      <div class="note">
+        <span class="mark">3</span>
+        <h3>관리자 명단은 비어 있는 것이 기본입니다</h3>
+        <p>
+          설정을 안 하면 관리자는 <strong>0명</strong>입니다. 그리고 실제로 존재하는 계정만 넣습니다 —
+          계정 없는 주소를 남겨 두면 <em>그 주소로 가입하는 사람이 관리자가 되기 때문입니다.</em>
+        </p>
+      </div>
+      <div class="note">
+        <span class="mark">4</span>
+        <h3>“배포 성공”이 “동작함”은 아닙니다</h3>
+        <p>
+          야간 파기 기능은 배포 설정 한 줄에 매달려 있어서, 그 줄을 잘못 되돌리면
+          <strong>배포는 그대로 성공하면서</strong> 파기만 조용히 사라집니다.
+          그래서 그 배선을 검사하는 자동 테스트를 따로 두었습니다.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <p>
+      이 문서는 <span class="mono">apps/docsnap</span> · <span class="mono">services/docsnap-bridge</span> 의
+      실제 설정과 코드 주석을 근거로 작성했습니다. 서비스 정의의 진실원천은 언제나
+      <span class="mono">registry/services.yaml</span> 이며, 이 문서와 어긋나면 레지스트리가 맞습니다.
+    </p>
+    <p>앱별 구조 해설 시리즈 · 예시 문서</p>
+  </footer>
+
+</div>

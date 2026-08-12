@@ -1,0 +1,73 @@
+# Android Fastlane — Play Internal/Beta/Production lanes
+# 사전 조건:
+# - bundle install (Gemfile에 fastlane 추가)
+# - play-key.json (Play Console Service Account)
+# - 환경변수: KEYSTORE_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD
+
+default_platform(:android)
+
+platform :android do
+  before_all do
+    setup_signing
+  end
+
+  desc "Decode keystore"
+  private_lane :setup_signing do
+    keystore_path = File.expand_path("upload-key.jks", __dir__)
+    if ENV["KEYSTORE_BASE64"]
+      File.write(keystore_path, Base64.decode64(ENV["KEYSTORE_BASE64"]))
+    end
+    ENV["UPLOAD_KEYSTORE_PATH"] = keystore_path
+  end
+
+  desc "Build signed AAB"
+  private_lane :build_aab do
+    gradle(
+      task: "bundle",
+      build_type: "Release",
+      properties: {
+        "android.injected.signing.store.file" => ENV["UPLOAD_KEYSTORE_PATH"],
+        "android.injected.signing.store.password" => ENV["KEYSTORE_PASSWORD"],
+        "android.injected.signing.key.alias" => ENV["KEY_ALIAS"],
+        "android.injected.signing.key.password" => ENV["KEY_PASSWORD"],
+      }
+    )
+  end
+
+  desc "Play Internal track"
+  lane :internal do
+    build_aab
+    upload_to_play_store(
+      track: "internal",
+      json_key: "fastlane/play-key.json",
+      aab: "app/build/outputs/bundle/release/app-release.aab",
+      skip_upload_metadata: true,
+      skip_upload_changelogs: true,
+      skip_upload_images: true,
+      skip_upload_screenshots: true
+    )
+  end
+
+  desc "Play Beta (open testing)"
+  lane :beta do
+    build_aab
+    upload_to_play_store(
+      track: "beta",
+      json_key: "fastlane/play-key.json",
+      aab: "app/build/outputs/bundle/release/app-release.aab",
+      skip_upload_metadata: true,
+      skip_upload_changelogs: true
+    )
+  end
+
+  desc "Play Production"
+  lane :production do
+    build_aab
+    upload_to_play_store(
+      track: "production",
+      json_key: "fastlane/play-key.json",
+      aab: "app/build/outputs/bundle/release/app-release.aab",
+      rollout: "0.1"
+    )
+  end
+end

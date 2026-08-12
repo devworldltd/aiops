@@ -1,0 +1,8 @@
+# 항목 상세 조회
+appId: ${MAESTRO_APP_ID}
+---
+- runFlow: 01-login.yaml
+- tapOn: "테스트 항목"
+- assertVisible:
+    id: "detail_screen"
+- assertVisible: "테스트 항목"

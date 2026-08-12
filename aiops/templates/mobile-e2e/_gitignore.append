@@ -1,0 +1,4 @@
+# Maestro mobile E2E
+.maestro-output/
+.maestro/screenshots/
+.maestro/recordings/

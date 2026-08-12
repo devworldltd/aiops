@@ -1,0 +1,2 @@
+# package_name(ENV["ANDROID_PACKAGE_NAME"]) # 또는 직접 명시
+# json_key_file("fastlane/play-key.json")

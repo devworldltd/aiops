@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# release.sh — aiops 배포 태그의 **단일 소유자**.
+#
+#   tools/release.sh v1.4.0        # vX.Y.Z 생성 + latest 이동 + 푸시
+#   DRY=1 tools/release.sh v1.4.0  # 무엇이 나갈지만 출력
+#
+# 왜 스크립트인가:
+#   ① `latest` 는 손으로 옮기면 **반드시 잊는다.** 그러면 `#latest` 를 핀한 사용자는 낡은 버전을
+#      받으면서 최신이라고 믿는다 — 실패처럼 보이지 않는 종류의 사고다.
+#   ② 태그와 `plugin.json` 의 `version` 이 어긋나면 캐시 경로
+#      (`~/.claude/plugins/cache/aiops/aiops/<version>/`)가 옛 디렉토리를 재사용해 갱신이 조용히
+#      실패한다. 그래서 여기서 **일치를 강제**한다.
+#
+# 전제: 버전 올림은 이미 PR 로 main 에 머지돼 있다(이 스크립트는 커밋하지 않는다 — 태그만 만든다).
+set -uo pipefail
+
+MODE=release
+if [[ "${1:-}" == "--sync-latest" ]]; then MODE=sync; shift; fi
+
+TAG="${1:-}"
+[[ -z "$TAG" ]] && { echo "사용: tools/release.sh vX.Y.Z | --sync-latest vX.Y.Z   (DRY=1 로 예행)" >&2; exit 2; }
+[[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "태그 형식은 vX.Y.Z 여야 합니다: $TAG" >&2; exit 2; }
+
+ROOT=$(git rev-parse --show-toplevel) || exit 2
+cd "$ROOT" || exit 2
+
+# ── 사전 검사 ────────────────────────────────────────────────────────
+BR=$(git branch --show-current)
+[[ "$BR" == "main" ]] || { echo "main 에서 실행하세요 (현재: $BR)" >&2; exit 2; }
+[[ -z "$(git status --porcelain)" ]] || { echo "커밋되지 않은 변경이 있습니다." >&2; exit 2; }
+
+git fetch origin main --tags --quiet
+LOCAL=$(git rev-parse main); REMOTE=$(git rev-parse origin/main)
+[[ "$LOCAL" == "$REMOTE" ]] || { echo "main 이 origin/main 과 다릅니다. 먼저 동기화하세요." >&2; exit 2; }
+
+# ── --sync-latest: 이미 있는 릴리스 태그로 latest 만 맞춘다 ──────────
+#   latest 가 드리프트했거나(손으로 태그를 냈다), 과거 태그로 되돌릴 때 쓴다.
+if [[ "$MODE" == sync ]]; then
+  git rev-parse -q --verify "refs/tags/$TAG" >/dev/null || { echo "$TAG 태그가 없습니다." >&2; exit 2; }
+  echo "── latest 동기화 ──"
+  echo "  latest : $(git rev-parse --short latest 2>/dev/null || echo '(없음)') → $(git rev-parse --short "$TAG^{commit}") ($TAG)"
+  [[ -n "${DRY:-}" ]] && { echo "── DRY=1 — 아무것도 하지 않았습니다."; exit 0; }
+  git tag -f latest "$TAG^{commit}" >/dev/null
+  git push -f origin latest
+  echo "✓ latest → $TAG"
+  exit 0
+fi
+
+VER=$(python3 -c "import json;print(json.load(open('aiops/.claude-plugin/plugin.json'))['version'])")
+[[ "v$VER" == "$TAG" ]] || {
+  echo "plugin.json version($VER) 과 태그($TAG) 가 다릅니다." >&2
+  echo "  → 버전 올림을 먼저 PR 로 머지하세요. 어긋난 태그는 캐시 갱신을 조용히 실패시킵니다." >&2
+  exit 2
+}
+
+git rev-parse -q --verify "refs/tags/$TAG" >/dev/null && {
+  echo "$TAG 태그가 이미 있습니다. 릴리스는 **새 태그**로 냅니다(이력이 감사 기록)." >&2
+  exit 2
+}
+
+[[ -f LICENSE ]] || echo "::warning:: LICENSE 가 없습니다 — 외부 배포 태그에는 있어야 합니다." >&2
+
+PREV=$(git tag -l 'v*' | sort -V | tail -1)
+echo "── 릴리스 계획 ──"
+echo "  태그    : $TAG  → $(git rev-parse --short main)"
+echo "  version : $VER  (plugin.json 일치 확인됨)"
+echo "  직전    : ${PREV:-(없음)}"
+echo "  latest  : $(git rev-parse --short latest 2>/dev/null || echo '(없음)') → $(git rev-parse --short main)"
+echo "  스킬    : $(ls aiops/skills | wc -l | tr -d ' ') · 에이전트 $(ls aiops/agents | wc -l | tr -d ' ')"
+
+[[ -n "${DRY:-}" ]] && { echo "── DRY=1 — 아무것도 하지 않았습니다."; exit 0; }
+
+# ── 태그 생성·이동 ───────────────────────────────────────────────────
+git tag -a "$TAG" -m "$TAG"
+git push origin "$TAG"
+
+# `latest` 는 **이동하는 포인터**다(경량 태그). vX.Y.Z 와 달리 이력이 아니라 별칭이다.
+git tag -f latest "$TAG^{commit}" >/dev/null
+git push -f origin latest
+
+echo "✓ $TAG 생성 · latest → $(git rev-parse --short "$TAG^{commit}") 이동 완료."
+echo "  소비자: #$TAG 핀(권장) 또는 #latest(자동 추종)."
+echo "  ⚠️ #latest 사용자도 마켓플레이스 재등록 또는 update 가 필요합니다 — 자동으로 당겨오지 않습니다."

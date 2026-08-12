@@ -1,0 +1,8 @@
+{
+  "name": "aiops",
+  "description": "aiops-v1 마켓플레이스 — plugin-native DevOps 워크플로(단일 플러그인 aiops).",
+  "owner": { "name": "Devworld Ltd" },
+  "plugins": [
+    { "name": "aiops", "source": "./aiops", "description": "devflow 계열 워크플로 스킬 + 개발/QA 에이전트 + E2E/모바일 템플릿.", "category": "workflow" }
+  ]
+}

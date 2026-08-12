@@ -1,0 +1,75 @@
+# Gitea Actions 워크플로 (GitHub Actions 호환 문법).
+# 시크릿은 Gitea repo/org secrets 로 등록한다 (Settings → Actions → Secrets).
+# 러너: GitHub 호스티드 macOS 소멸에 따라 iOS 잡은 self-hosted mac 러너([self-hosted, macos])로 실행.
+#   해당 러너에는 Xcode(예: Xcode_15.4)·iOS 시뮬레이터·xcpretty 등 툴체인이 선설치돼 있어야 한다.
+# 마켓플레이스 액션(actions/checkout·actions/cache)은 Gitea Actions 가 프록시하나
+#   self-hosted 러너에서 동작 검증 필요. $GITHUB_PATH·hashFiles()·github.* 는 Gitea 호환.
+name: Mobile iOS CI
+
+on:
+  push:
+    branches: [dev, main]
+    paths: ['ios/**', '.gitea/workflows/mobile-ios.yml']
+  pull_request:
+    paths: ['ios/**']
+
+jobs:
+  build-test:
+    # 러너 라벨 매핑: GitHub macos-14 → self-hosted mac 러너.
+    # Xcode·시뮬레이터·xcpretty 를 러너에 선설치할 것.
+    runs-on: [self-hosted, macos]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Cache SPM
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Developer/Xcode/DerivedData/**/SourcePackages
+          key: spm-${{ hashFiles('**/Package.resolved') }}
+
+      - name: Build & Test
+        run: |
+          xcodebuild test \
+            -scheme App \
+            -destination 'platform=iOS Simulator,name=iPhone 15,OS=latest' \
+            -enableCodeCoverage YES \
+            CODE_SIGNING_ALLOWED=NO | xcpretty
+        working-directory: ios
+
+  e2e-smoke:
+    # 러너 라벨 매핑: GitHub macos-14 → self-hosted mac 러너.
+    runs-on: [self-hosted, macos]
+    needs: build-test
+    timeout-minutes: 45
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/dev'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Maestro
+        run: |
+          curl -Ls "https://get.maestro.mobile.dev" | bash
+          echo "$HOME/.maestro/bin" >> $GITHUB_PATH
+
+      - name: Boot iOS Simulator
+        run: |
+          xcrun simctl boot "iPhone 15" || true
+          xcrun simctl bootstatus "iPhone 15" -b
+
+      - name: Build & install app on Simulator
+        run: |
+          xcodebuild build \
+            -scheme App \
+            -destination 'platform=iOS Simulator,name=iPhone 15,OS=latest' \
+            CODE_SIGNING_ALLOWED=NO
+          # 추가 설치 단계는 프로젝트별
+        working-directory: ios
+
+      - name: Maestro smoke
+        run: maestro test .maestro/smoke/

@@ -1,0 +1,8 @@
+# 핵심 read-only 흐름 (prod smoke, BLAST_RADIUS_GUARD)
+# 운영 데이터 수정 금지. 읽기 전용 흐름만.
+appId: ${MAESTRO_APP_ID}
+---
+- runFlow: 03-auth-flow.yaml
+- tapOn: "항목 목록"
+- assertVisible:
+    id: "item_list"

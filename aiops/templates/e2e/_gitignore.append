@@ -1,0 +1,10 @@
+# Playwright E2E (claude-ai-devops)
+# install.sh 가 대상 프로젝트 .gitignore 끝에 append 한다.
+node_modules/
+.auth/
+playwright-report/
+playwright-results.json
+playwright-junit.xml
+test-results/
+# E2E 환경변수 (이슈 #117) — 시크릿 보호. .env.test.example만 커밋한다.
+.env.test

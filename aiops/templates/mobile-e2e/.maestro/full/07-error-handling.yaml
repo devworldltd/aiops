@@ -1,0 +1,13 @@
+# 오프라인/네트워크 오류 처리
+appId: ${MAESTRO_APP_ID}
+---
+- launchApp:
+    clearState: true
+- tapOn:
+    id: "email_input"
+- inputText: "invalid@example.com"
+- tapOn:
+    id: "password_input"
+- inputText: "wrong"
+- tapOn: "로그인하기"
+- assertVisible: "로그인 실패"

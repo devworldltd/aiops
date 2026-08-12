@@ -1,0 +1,7 @@
+# 항목 삭제
+appId: ${MAESTRO_APP_ID}
+---
+- runFlow: 04-crud-read.yaml
+- tapOn: "삭제"
+- tapOn: "확인"
+- assertNotVisible: "테스트 항목"

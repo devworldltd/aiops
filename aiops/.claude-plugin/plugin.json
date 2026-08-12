@@ -1,0 +1,9 @@
+{
+  "name": "aiops",
+  "description": "DevWorld AI DevOps 워크플로 — devflow(기획→개발→QA/E2E/PR/배포) 멀티에이전트. 스킬 32 + 에이전트 25, plugin-native(네임스페이스 aiops:). 이슈/PR/리뷰는 forge 중립 헬퍼(scripts/forge.sh — Gitea 네이티브, GitHub 자동감지). 작업 워크트리는 /aiops:focus·/aiops:unfocus, 비개발자용 구조 해설은 /aiops:explain-app (모두 레포 형태 자동감지). 프로젝트 설정은 /aiops:setup 이 생성.",
+  "version": "1.5.1",
+  "author": {
+    "name": "Devworld Ltd"
+  },
+  "repository": "https://github.com/devworldltd/aiops"
+}

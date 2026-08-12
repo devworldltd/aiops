@@ -1,0 +1,54 @@
+# Gitea Actions 워크플로 (GitHub Actions 호환 문법).
+# 시크릿은 Gitea repo/org secrets 로 등록한다 (Settings → Actions → Secrets).
+#   PLAY_STORE_JSON_KEY_BASE64·ANDROID_KEYSTORE_BASE64·ANDROID_KEYSTORE_PASSWORD·
+#   ANDROID_KEY_ALIAS·ANDROID_KEY_PASSWORD.
+# 마켓플레이스 액션(actions/checkout·setup-java·ruby/setup-ruby)은 Gitea Actions 가 프록시하나
+#   self-hosted 러너에서 동작 검증 필요. 러너에 JDK/Ruby 툴체인이 선설치돼 있으면 해당 setup 액션 생략 가능.
+# workflow_dispatch(inputs)·github.event.inputs.* 는 Gitea 호환. 수동 실행은 Gitea 웹 UI Actions 또는
+#   REST: POST /api/v1/repos/{owner}/{repo}/actions/workflows/mobile-release-android.yml/dispatches.
+name: Mobile Release — Android (Play)
+
+on:
+  push:
+    branches: [main]
+    paths: ['android/**']
+  workflow_dispatch:
+    inputs:
+      track:
+        description: 'Play track'
+        required: true
+        default: internal
+        type: choice
+        options: [internal, beta, production]
+
+jobs:
+  release:
+    # 러너 라벨 매핑: ubuntu-latest → Gitea Linux 러너(ubuntu-latest 라벨을 러너에 등록).
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '17', cache: gradle }
+
+      - name: Set up Ruby (Fastlane)
+        uses: ruby/setup-ruby@v1
+        with:
+          bundler-cache: true
+          working-directory: android
+
+      - name: Decode Play JSON key
+        run: |
+          mkdir -p android/fastlane
+          echo "${{ secrets.PLAY_STORE_JSON_KEY_BASE64 }}" | base64 -d > android/fastlane/play-key.json
+
+      - name: Fastlane lane
+        run: bundle exec fastlane ${{ github.event.inputs.track || 'internal' }}
+        working-directory: android
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}

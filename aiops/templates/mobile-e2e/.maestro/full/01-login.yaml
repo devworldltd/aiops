@@ -1,0 +1,16 @@
+# 로그인 흐름 검증 (E2E)
+appId: ${MAESTRO_APP_ID}
+env:
+  EMAIL: ${E2E_TEST_USER}
+  PASSWORD: ${E2E_TEST_PASS}
+---
+- launchApp
+- tapOn: "로그인"
+- tapOn:
+    id: "email_input"
+- inputText: ${EMAIL}
+- tapOn:
+    id: "password_input"
+- inputText: ${PASSWORD}
+- tapOn: "로그인하기"
+- assertVisible: "홈"

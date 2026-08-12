@@ -1,0 +1,33 @@
+<!-- e2e-agent:generated source={{ISSUE_N}}/{{ID}} do-not-edit-above — 편집 시 이 줄 삭제 -->
+<!--
+  러너 중립 자연어 E2E 시나리오 (이슈 #239).
+  - browser-use 전용 문법(액션 DSL / page.click / CSS 셀렉터 코드) 금지. 순수 자연어만.
+  - 구독형 러너(claude/gpt/gemini) · 로컬 LLM(browser-use) · 향후 러너 · 사람이 공통 소비한다.
+  - {base_url} 은 러너가 실행 시점에 치환하는 런타임 placeholder (그대로 남긴다).
+  - 자격증명은 e2e_user / e2e_pass sensitive_data placeholder 로만 참조 — 평문 금지.
+-->
+# E2E 시나리오: {{흐름명}} ({{ID}})
+
+대상 앱: {base_url}{{진입경로}}
+
+## 목표
+{{기대결과}}
+
+## 사전조건
+{{사전데이터}}
+(로그인 필요 시: 자격증명은 e2e_user / e2e_pass 를 사용한다. 실제 값은 절대 이 파일에 쓰지 않는다.)
+
+## 수행 단계 (순서대로, 순수 자연어)
+{{조작단계}}
+
+## 성공 판정 신호 (관찰 가능)
+{{성공판정신호}}
+(예: URL 이 {base_url}/dashboard 로 바뀌고 "환영합니다" 텍스트가 보인다.)
+
+## 부정/엣지 케이스
+{{엣지케이스}}
+
+## 결과 출력 (필수 계약)
+마지막 줄에 정확히 한 줄로 출력한다:
+- 성공: `E2E_RESULT=PASS`
+- 실패: `E2E_RESULT=FAIL: <짧은 사유>`

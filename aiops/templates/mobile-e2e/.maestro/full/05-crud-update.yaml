@@ -1,0 +1,11 @@
+# 항목 수정
+appId: ${MAESTRO_APP_ID}
+---
+- runFlow: 04-crud-read.yaml
+- tapOn: "편집"
+- tapOn:
+    id: "name_input"
+- eraseText
+- inputText: "수정된 항목"
+- tapOn: "저장"
+- assertVisible: "수정된 항목"

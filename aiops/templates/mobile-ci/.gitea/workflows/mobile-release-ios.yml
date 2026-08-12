@@ -1,0 +1,56 @@
+# Gitea Actions 워크플로 (GitHub Actions 호환 문법).
+# 시크릿은 Gitea repo/org secrets 로 등록한다 (Settings → Actions → Secrets).
+#   APP_STORE_CONNECT_API_KEY_BASE64·APP_STORE_CONNECT_API_KEY_ID·
+#   APP_STORE_CONNECT_API_ISSUER_ID·MATCH_PASSWORD·MATCH_GIT_BASIC_AUTHORIZATION.
+# 러너: GitHub 호스티드 macOS 소멸에 따라 self-hosted mac 러너([self-hosted, macos])로 실행.
+#   해당 러너에는 Xcode(예: Xcode_15.4)·iOS 툴체인·Ruby(Fastlane) 가 선설치돼 있어야 한다.
+# 마켓플레이스 액션(actions/checkout·ruby/setup-ruby)은 Gitea Actions 가 프록시하나
+#   self-hosted 러너에서 동작 검증 필요. 러너에 Ruby 가 선설치돼 있으면 setup-ruby 생략 가능.
+# workflow_dispatch(inputs)·github.event.inputs.* 는 Gitea 호환. 수동 실행은 Gitea 웹 UI Actions 또는
+#   REST: POST /api/v1/repos/{owner}/{repo}/actions/workflows/mobile-release-ios.yml/dispatches.
+name: Mobile Release — iOS (TestFlight/App Store)
+
+on:
+  push:
+    branches: [main]
+    paths: ['ios/**']
+  workflow_dispatch:
+    inputs:
+      lane:
+        description: 'Fastlane lane'
+        required: true
+        default: internal
+        type: choice
+        options: [internal, beta, production]
+
+jobs:
+  release:
+    # 러너 라벨 매핑: GitHub macos-14 → self-hosted mac 러너.
+    # Xcode·iOS 툴체인·Ruby(Fastlane) 를 러너에 선설치할 것.
+    runs-on: [self-hosted, macos]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app
+
+      - name: Set up Ruby (Fastlane)
+        uses: ruby/setup-ruby@v1
+        with:
+          bundler-cache: true
+          working-directory: ios
+
+      - name: Decode App Store Connect API key
+        run: |
+          mkdir -p ios/fastlane
+          echo "${{ secrets.APP_STORE_CONNECT_API_KEY_BASE64 }}" | base64 -d > ios/fastlane/asc-key.p8
+
+      - name: Fastlane lane
+        run: bundle exec fastlane ${{ github.event.inputs.lane || 'internal' }}
+        working-directory: ios
+        env:
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
+          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+          MATCH_GIT_BASIC_AUTHORIZATION: ${{ secrets.MATCH_GIT_BASIC_AUTHORIZATION }}

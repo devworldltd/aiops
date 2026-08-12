@@ -1,0 +1,10 @@
+# 항목 생성
+appId: ${MAESTRO_APP_ID}
+---
+- runFlow: 01-login.yaml
+- tapOn: "+"  # FAB
+- tapOn:
+    id: "name_input"
+- inputText: "테스트 항목"
+- tapOn: "저장"
+- assertVisible: "테스트 항목"

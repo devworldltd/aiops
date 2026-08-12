@@ -1,0 +1,6 @@
+# 앱 실행 헬스체크 (smoke)
+appId: ${MAESTRO_APP_ID}
+---
+- launchApp
+- assertVisible:
+    id: "app_root"
