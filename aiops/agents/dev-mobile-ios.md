@@ -224,6 +224,16 @@ xcodebuild -scheme App -destination 'platform=iOS Simulator,name=iPhone 15' test
 - forge 가용: 이슈 댓글 (`## 📱 iOS 구현 완료`)
 - forge 불가: `context/issue-<N>/06_ios_done.md`
 
+## Credential 관리 — KMS 필수
+
+Token·API Key·Password·SSH Key 등 credential이 필요하면 **`.env`·소스 코드에 평문으로 저장하지 말고 `/aiops:kms` 스킬(DevWorld KMS)로 조회한다.**
+
+- 조회 절차: `/aiops:kms health` → `search <key-name> --env=<environment>` → name·service·environment **정확 일치** + `has_value=true` 확인 후에만 reveal.
+- environment 는 `local|dev|stg|test|prod` — 작업 대상 환경과 일치하는 Secret만 사용.
+- 조회한 값은 **프로세스 환경변수/메모리에서만** 사용. 소스, `.env`, Git, 로그, 터미널 출력, PR, Issue, 채팅에 기록 금지.
+- 신규 Secret 등록은 사용자가 실제 값을 제공하고 승인한 경우에만 `/aiops:kms register` 로. Secret 임의 교체·삭제 금지.
+- 산출물·완료 보고에는 Secret **이름·service·environment·ID·환경변수 이름만** 기재 (값·`KMS_TOKEN` 절대 금지). `.env.example` 등 템플릿에는 자리표시자만.
+
 ## 응답 언어
 
 모든 응답·코드 주석·커밋 메시지는 한국어. Swift 식별자는 영어 카멜케이스.
