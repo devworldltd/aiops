@@ -157,7 +157,7 @@ PRD·기술 스펙·리뷰·커밋 메시지 전부 한국어다.
 | 스킬 | 하는 일 |
 |---|---|
 | `merge-pr <N>` | issue→dev 머지 + CI 대기 + `deployed_sha` 확인 + **dev E2E 자동 실행** |
-| `merge-main` | dev 안정성 게이트(직전 이슈의 Dev E2E PASS 마커) 확인 → dev→main PR·머지 |
+| `merge-main` | dev 안정성 게이트(직전 이슈의 Dev E2E PASS 마커) 확인 → **버전 올리기(§7.0, 있는 경우)** → dev→main PR·머지 |
 | `deploy-prod` | main Actions 대기 + prod 헬스체크 + smoke E2E + **자동 롤백** |
 | `verify-deploy --env=dev\|prod` | 위 검증 흐름만 단독 실행 |
 | `promote` | **deprecated** — `merge-main` 권장 |
@@ -257,6 +257,7 @@ tools/release.sh --sync-latest v1.3.2
 | `use_cloudflare_workers` | CF 전용 단계 on/off. **미지정 시 `agent_hints.*.deploy_target` 에서 파생**하고, 그것도 없으면 `false`(하지 않는 쪽이 안전) |
 | `deploy_workflow` · `project_root` | Actions 파일명 · 작업 루트 |
 | `auto_merge_to_dev` | review-pr APPROVE 시 자동 dev 머지 |
+| `release_command` | merge-main §7.0 이 승격 직전에 돌릴 릴리스 명령. 미설정 시 `package.json` 의 `scripts.release` 를 쓰고, 그것도 없으면 **아무 일도 하지 않는다** |
 | `e2e_test_enabled` · `e2e_devflow_step8_enabled` | E2E 활성(기본 false) |
 | `e2e_local_url` · `e2e_dev_url` · `e2e_prod_url` · `e2e_healthcheck_path` | 대상 URL |
 | `e2e_full_paths` · `e2e_smoke_paths` · `e2e_deploy_wait_sec` | 실행 범위·대기 |
@@ -278,6 +279,28 @@ tools/release.sh --sync-latest v1.3.2
 | `aiops.explainDocsDir` | `docs/apps` | explain-app 정본 경로 |
 
 ---
+
+### 버전 올리기 연동 (merge-main §7.0)
+
+`main` 은 대개 브랜치 보호가 걸려 **CI 가 버전 커밋을 되밀 수 없다.** 그래서
+`/aiops:merge-main` 은 dev → main PR 을 만들기 **직전**에 릴리스 명령을 돌린다.
+
+| 설정 | 값 |
+|------|-----|
+| `.claude/config.json` 의 `release_command` | 예: `"npm run release"` · `"make release"` |
+| (미설정 시) `package.json` 의 `scripts.release` | 있으면 `npm run release` 로 자동 인식 |
+| 둘 다 없으면 | **아무 일도 하지 않는다** (역호환) |
+
+동작:
+
+1. 릴리스 명령 실행 → `package.json`·`CHANGELOG.md` 등이 갱신됨
+2. 바뀐 것이 없으면 그대로 승격 (문서·잡무만 있는 승격이 여기 해당 — **오류가 아니다**)
+3. 바뀌었으면 `chore/release-vX.Y.Z` 브랜치 → **dev PR 생성·머지** → dev 재최신화 후 승격 계속
+
+> dev 에 직접 push 하지 않는다 — dev 도 보호돼 있는 경우가 많고, 버전 상승은
+> 리뷰 가능한 형태로 남는 편이 낫다.
+>
+> `--dry-run` 에서는 실행하지 않고 **무엇을 돌릴지만** 출력한다.
 
 ## 7. 처음 시작하는 흐름
 
@@ -322,3 +345,4 @@ claude plugin install aiops@aiops
 
 스킬을 추가·변경했으면 **§3 표와 §2 의 마커·게이트**를 함께 고친다. 마커 헤더는 후속 스킬이
 grep 하는 인터페이스이므로, 바꾸면 이 문서만 낡는 게 아니라 **워크플로가 조용히 끊긴다.**
+

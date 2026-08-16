@@ -44,7 +44,7 @@ _block_and_exit() {
 ```
 
 핵심 제약:
-- 사유 코드는 §9 매트릭스의 8종 중 하나로 고정.
+- 사유 코드는 §9 매트릭스의 11종 중 하나로 고정.
 - `--dry-run` 시 댓글 등록 0건.
 
 ---
@@ -288,11 +288,19 @@ fi
 ## 6. dry-run 처리
 
 ```bash
+# §6.0 릴리스 명령 탐지 (미리보기용 — 실행하지 않는다)
+RELEASE_CMD_PREVIEW=$(jq -r '.release_command // empty' .claude/config.json 2>/dev/null)
+if [[ -z "$RELEASE_CMD_PREVIEW" ]] && [[ -f package.json ]] \
+   && jq -e '.scripts.release' package.json >/dev/null 2>&1; then
+  RELEASE_CMD_PREVIEW="npm run release"
+fi
+
 if [[ "$DRY_RUN" == "true" ]]; then
   echo
   echo "## 🧪 DRY-RUN — 예상 동작"
   echo "- 검사된 이슈: #$RECENT_ISSUE"
   echo "- 인용 마커: $MARKER_QUOTE"
+  echo "- 버전 올리기: $([[ -n "$RELEASE_CMD_PREVIEW" ]] && echo "\`$RELEASE_CMD_PREVIEW\` 실행 예정" || echo "해당 없음 (릴리스 명령 미설정)")"
   echo "- 생성할 PR: dev → main (제목: \"chore: dev → main 프로모션 ($(date +%Y-%m-%d))\")"
   echo "- 머지 방식: forge.sh pr-merge (dev 브랜치 보존, --delete-branch 없음)"
   echo "- 등록할 댓글: ## 🚀 main 머지 완료 + main_sha=<merge 후 origin/main SHA>"
@@ -307,6 +315,92 @@ fi
 ---
 
 ## 7. dev → main PR 생성 + 자동 머지
+
+### 7.0 버전 올리기 (릴리스 명령이 있는 프로젝트만)
+
+**릴리스 노트·버전 상승은 `main` 에 들어가기 전에 끝나야 한다.**
+
+`main` 은 대개 브랜치 보호가 걸려 있어 **CI 가 버전 커밋을 되밀 수 없다.** 그래서
+배포 후에 올리려 하면 올릴 방법이 없고, 태그만 붙이면 `package.json` 의 버전과
+실제 릴리스가 어긋난다. 승격 **직전**이 유일하게 맞는 자리다.
+
+```bash
+# §7.0.1 릴리스 명령 탐지 — 없으면 이 절 전체를 건너뛴다(역호환)
+#   우선순위: config.json 명시 > package.json 의 release 스크립트
+RELEASE_CMD=$(jq -r '.release_command // empty' .claude/config.json 2>/dev/null)
+if [[ -z "$RELEASE_CMD" ]] && [[ -f package.json ]] \
+   && jq -e '.scripts.release' package.json >/dev/null 2>&1; then
+  RELEASE_CMD="npm run release"
+fi
+
+if [[ -z "$RELEASE_CMD" ]]; then
+  echo "[merge-main] §7.0 릴리스 명령 없음 — 버전 올리기를 건너뜁니다."
+  echo "             (설정하려면 .claude/config.json 에 \"release_command\", 또는 package.json 에 scripts.release)"
+else
+  echo "[merge-main] §7.0 릴리스 명령: $RELEASE_CMD"
+
+  # 지저분한 작업 트리에서 돌리면 남의 변경이 릴리스 커밋에 섞인다.
+  if [[ -n "$(git status --porcelain)" ]]; then
+    _block_and_exit "release_dirty_tree" "" \
+      "작업 트리에 커밋되지 않은 변경이 있습니다 — 정리(commit/stash) 후 \`/aiops:merge-main\` 재실행"
+  fi
+
+  eval "$RELEASE_CMD" || {
+    _block_and_exit "release_failed" "" \
+      "\`$RELEASE_CMD\` 실패 — 로그 확인 후 재시도"
+  }
+
+  # §7.0.2 아무것도 안 바뀌었으면 그대로 진행한다.
+  #   문서·잡무만 있는 승격이 여기로 온다. **오류가 아니다** — 실패로 다루면
+  #   그런 승격마다 막히고, 사람들이 곧 이 단계를 통째로 우회하게 된다.
+  if git diff --quiet; then
+    echo "[merge-main] §7.0 버전 변화 없음 — 그대로 승격합니다."
+  else
+    NEW_VERSION=$(jq -r '.version // empty' package.json 2>/dev/null)
+    echo "[merge-main] §7.0 버전 → ${NEW_VERSION:-(확인 불가)}"
+
+    # §7.0.3 **dev 에 직접 push 하지 않는다.** dev 도 보호돼 있는 경우가 많고,
+    #   보호가 없더라도 버전 상승은 리뷰 가능한 형태로 남는 편이 낫다.
+    #   그래서 chore 브랜치 → dev PR → 머지 경로를 탄다.
+    REL_BRANCH="chore/release-${NEW_VERSION:-$(date +%Y%m%d%H%M%S)}"
+    git checkout -b "$REL_BRANCH"
+    git add -A
+    git commit -m "chore(release): v${NEW_VERSION} 버전 올림"
+    git push -u origin "$REL_BRANCH"
+
+    REL_OUT=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/forge.sh" pr-create "$REL_BRANCH" dev \
+      "chore(release): v${NEW_VERSION} 버전 올림" \
+      "\`$RELEASE_CMD\` 결과입니다. dev → main 승격 직전에 자동 생성됐습니다.
+
+머지되면 \`/aiops:merge-main\` 이 이어서 dev → main PR 을 만듭니다." 2>&1)
+    REL_PR=$(sed -E 's/.*PR_NUMBER=([0-9]+).*/\1/' <<<"$REL_OUT")
+
+    if [[ -z "$REL_PR" ]]; then
+      _block_and_exit "release_pr_failed" "" \
+        "릴리스 PR 생성 실패 — 브랜치 \`$REL_BRANCH\` 를 수동으로 dev 에 머지한 뒤 재실행. 출력: $REL_OUT"
+    fi
+
+    bash "${CLAUDE_PLUGIN_ROOT}/scripts/forge.sh" pr-merge "$REL_PR" --delete-branch || {
+      _block_and_exit "release_pr_failed" "" \
+        "릴리스 PR #$REL_PR 머지 실패 — 체크/충돌 확인 후 수동 머지하고 재실행"
+    }
+
+    # dev 를 다시 최신화하고 승격 대상 커밋 수를 다시 센다.
+    git checkout dev
+    git fetch origin dev --quiet
+    git pull --ff-only origin dev
+    NEW_COMMITS=$(git log --oneline origin/main..origin/dev | wc -l | tr -d ' ')
+    echo "[merge-main] §7.0 릴리스 PR #$REL_PR 머지 완료 — 승격 대상 $NEW_COMMITS 건"
+  fi
+fi
+```
+
+핵심 제약:
+- **릴리스 명령이 없으면 아무 일도 하지 않는다** — 기존 프로젝트의 동작은 그대로다.
+- **`--dry-run` 에서는 실행하지 않는다** (§6 이 먼저 종료한다). 대신 무엇을 돌릴지 출력한다.
+- **버전이 안 오르는 것은 오류가 아니다.** 문서·잡무만 있는 승격이 그렇다 — 실패로
+  다루면 그런 승격마다 막히고, 결국 이 단계를 통째로 우회하게 된다.
+- 작업 트리가 지저분하면 **차단한다** — 남의 변경이 릴리스 커밋에 섞이면 되돌리기 어렵다.
 
 ### 7.1 PR 본문 작성
 
@@ -450,6 +544,9 @@ EOF
 | `marker_absent` | A/B/C/D 마커 모두 없음 + 사용자 N 또는 비대화 | `/aiops:merge-pr` 미실행 또는 `e2e_test_enabled=false`. 긴급 시 `/aiops:merge-main --skip-e2e-check` |
 | `linked_issue_not_found` | 최근 머지 커밋에서 PR/이슈 번호 추출 실패 | 머지 커밋 메시지에 `Merge pull request #N` / `Closes #M` 포함 확인 |
 | `pr_conflict` | `--check-conflict` + `git merge-tree` 충돌 감지 | `git checkout dev && git merge origin/main` 로 충돌 해결 후 재실행 |
+| `release_dirty_tree` | §7.0 진입 시 작업 트리에 커밋되지 않은 변경 존재 | `git status` 확인 → commit/stash 후 재실행 |
+| `release_failed` | §7.0 릴리스 명령 실행 실패 | 그 명령의 로그 확인 → 수정 후 재실행 |
+| `release_pr_failed` | §7.0 릴리스 PR 생성·머지 실패 | `chore/release-*` 브랜치를 수동으로 dev 에 머지한 뒤 재실행 |
 | `pr_create_failed` | `forge.sh pr-create` 실패 | forge.sh 에러 메시지 확인, 권한/네트워크 점검 |
 | `merge_failed` | `forge.sh pr-merge` 실패 또는 main_sha 형식 위반 | PR 상태(체크/충돌) 확인 후 수동 재시도 |
 
@@ -523,6 +620,15 @@ sequenceDiagram
         MM->>U: §5 요약 + [y/N]
         opt --dry-run
             MM-->>U: §6 예상 동작 (exit 0)
+        end
+        opt 릴리스 명령이 있는 프로젝트 (§7.0)
+            MM->>MM: release_command 실행 (버전·CHANGELOG 갱신)
+            alt 버전이 올랐다
+                MM->>GH: chore/release-vX.Y.Z → dev PR 생성·머지
+                MM->>G: dev 재최신화 + 승격 대상 재계산
+            else 변화 없음 (문서·잡무만)
+                MM->>MM: 그대로 진행
+            end
         end
         MM->>GH: §7 forge.sh pr-create dev main
         MM->>GH: §8 forge.sh pr-merge (dev 보존)
