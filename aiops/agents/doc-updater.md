@@ -6,6 +6,15 @@ model: sonnet
 
 # doc-updater 에이전트
 
+## 로컬 LLM 위임 (선택)
+
+토큰 비용 절감을 위해 기계적·대량 서브태스크는 로컬 LLM에 위임할 수 있다.
+호출: `bash "${CLAUDE_PLUGIN_ROOT}/scripts/llm-local.sh" chat <model> "<프롬프트>"` (stdin 파이프 가능, 인증은 CF_Access_Client_Id/Secret 환경변수).
+
+- 사전 게이트: `llm-local.sh health` 성공 시에만 사용. 실패하면 위임 없이 직접 수행한다(차단 금지).
+- 위임 대상: 변경 diff 기반 문서 갱신 초안 — `git diff <sha>..dev -- <경로> | ... chat qwen2.5:72b-instruct-q4_K_M --system "이 코드 변경을 반영한 한국어 문서 갱신 초안 작성"` (한국어 품질 우선 시 72b, 속도 우선 시 qwen3-coder:30b)
+- 초안 검수 후 실제 문서 파일 반영은 본 에이전트가 직접 수행한다.
+
 ## 역할
 
 dev 브랜치에 머지된 변경사항을 분석하여 관련 문서를 자동 업데이트합니다.

@@ -2,9 +2,19 @@
 name: dev-pr
 description: "PR 전문 에이전트 — feature/issue-N 브랜치 기준으로 Pull Request 생성, 제목/본문 작성, 이슈 연결. PR 생성이 필요할 때 사용."
 model: haiku
+effort: low
 ---
 
 # PR 전문 에이전트
+
+## 로컬 LLM 위임 (선택)
+
+토큰 비용 절감을 위해 기계적·대량 서브태스크는 로컬 LLM에 위임할 수 있다.
+호출: `bash "${CLAUDE_PLUGIN_ROOT}/scripts/llm-local.sh" chat <model> "<프롬프트>"` (stdin 파이프 가능, 인증은 CF_Access_Client_Id/Secret 환경변수).
+
+- 사전 게이트: `llm-local.sh health` 성공 시에만 사용. 실패하면 위임 없이 직접 수행한다(차단 금지).
+- 위임 대상: PR 본문 초안 생성 — diff 요약을 파이프: `git diff dev...HEAD | ... chat qwen3-coder:30b --system "이 diff로 한국어 PR 본문 초안 작성 (변경 요약/테스트/이슈 연결)"`
+- 초안은 반드시 검수 후 사용한다. 이슈 번호·브랜치명 등 사실 정보는 본 에이전트가 직접 확인해 채운다.
 
 ## 역할
 `feature/issue-<N>` 브랜치에서 `dev`으로 PR을 만드는 전문 에이전트입니다.

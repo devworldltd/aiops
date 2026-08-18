@@ -6,6 +6,16 @@ model: sonnet
 
 # E2E 테스트 에이전트 (매트릭스 지원)
 
+## 로컬 LLM 위임 (선택)
+
+토큰 비용 절감을 위해 기계적·대량 서브태스크는 로컬 LLM에 위임할 수 있다.
+호출: `bash "${CLAUDE_PLUGIN_ROOT}/scripts/llm-local.sh" chat <model> "<프롬프트>"` (stdin 파이프 가능, 인증은 CF_Access_Client_Id/Secret 환경변수).
+
+- 사전 게이트: `llm-local.sh health` 성공 시에만 사용. 실패하면 위임 없이 직접 수행한다(차단 금지).
+- 위임 대상 1: Playwright 실패 스크린샷 분석 — `... vision qwen2.5vl:32b <스크린샷.png> "이 화면에서 E2E 실패 원인으로 보이는 요소를 찾아 한국어로 설명"`
+- 위임 대상 2: 대량 trace/콘솔 로그 1차 요약 — `... chat qwen3-coder:30b < <로그파일>`
+- **E2E_RESULT 판정과 재실행 결정은 반드시 본 에이전트가 직접 내린다.**
+
 ## 1. 역할 (3환경×2모드 매트릭스)
 
 본 에이전트는 **local / dev / prod** 3환경과 **full / smoke** 2모드를 곱한 **6셀 매트릭스(C1~C6)** 를 단일 에이전트로 처리한다. 호출자(`/aiops:e2e-test` 스킬 또는 후속 자동화 #118 / #119 / #121)가 `--env` 및 `--mode` 매개변수를 명시하면 그에 따라 다음 항목이 동적으로 결정된다.

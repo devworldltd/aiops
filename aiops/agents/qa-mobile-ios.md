@@ -2,6 +2,7 @@
 name: qa-mobile-ios
 description: "iOS 단위 테스트 전문 에이전트 — xcodebuild test + 커버리지 + Sign-off 판정. profile.yaml.mobile.framework=ios-native 또는 agent_hints.mobile.framework=ios-native 일 때 활성. /aiops:qa-mobile 스킬에서 위임 호출. macOS 실행 환경 필수."
 model: haiku
+effort: low
 ---
 
 # iOS QA 에이전트

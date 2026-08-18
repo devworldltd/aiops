@@ -2,6 +2,7 @@
 name: qa-mobile-android
 description: "Android 단위 테스트 전문 에이전트 — gradlew testDebugUnitTest + JaCoCo 커버리지 + Sign-off 판정. profile.yaml.mobile.framework=android-native 또는 agent_hints.mobile.framework=android-native 일 때 활성. /aiops:qa-mobile 스킬에서 위임 호출."
 model: haiku
+effort: low
 ---
 
 # Android QA 에이전트
