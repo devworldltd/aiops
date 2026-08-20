@@ -29,16 +29,25 @@
 set -uo pipefail
 
 BASE_URL="${LOCAL_LLM_BASE_URL:-https://api.devworld.co.kr}"
+
+# 인증 우선순위 (actions-wait.sh 관례와 동일):
+#   ① 서비스 토큰 env (CF_Access_Client_Id/Secret) — CI·헤드리스용
+#   ② cloudflared access 캐시 토큰 (이메일 OTP 로그인 후 캐시) — 개인 세션용
+#      미캐시면 `cloudflared access login <URL>` 안내는 health 실패 메시지에서 수행
+#   ③ 무인증 (Access 미적용 엔드포인트)
 AUTH_ARGS=()
 if [[ -n "${CF_Access_Client_Id:-}" && -n "${CF_Access_Client_Secret:-}" ]]; then
   AUTH_ARGS=(-H "CF-Access-Client-Id: ${CF_Access_Client_Id}" -H "CF-Access-Client-Secret: ${CF_Access_Client_Secret}")
+elif command -v cloudflared >/dev/null 2>&1; then
+  CF_JWT=$(cloudflared access token --app="${BASE_URL}" 2>/dev/null || true)
+  [[ -n "$CF_JWT" && "$CF_JWT" != *"Unable"* ]] && AUTH_ARGS=(-H "cf-access-token: ${CF_JWT}")
 fi
 
 die() { echo "[llm-local] $*" >&2; exit 2; }
 
 api() { # api <path> [curl 추가 인자...]
   local path="$1"; shift
-  curl -sS --max-time "${TIMEOUT:-300}" "${AUTH_ARGS[@]}" "$@" "${BASE_URL}${path}"
+  curl -sS --max-time "${TIMEOUT:-300}" ${AUTH_ARGS[@]+"${AUTH_ARGS[@]}"} "$@" "${BASE_URL}${path}"
 }
 
 extract_content() { # stdin: chat.completion JSON → content 출력
@@ -61,8 +70,14 @@ except (KeyError, IndexError):
 cmd="${1:-}"; shift || true
 case "$cmd" in
   health)
-    code=$(curl -s -o /dev/null --max-time 15 -w '%{http_code}' "${AUTH_ARGS[@]}" "${BASE_URL}/v1/models" || echo 000)
-    if [[ "$code" == "200" ]]; then echo "OK ${BASE_URL}"; else die "엔드포인트 응답 없음 (HTTP ${code}) — ${BASE_URL}"; fi
+    code=$(curl -s -o /dev/null --max-time 15 -w '%{http_code}' ${AUTH_ARGS[@]+"${AUTH_ARGS[@]}"} "${BASE_URL}/v1/models" || echo 000)
+    if [[ "$code" == "200" ]]; then
+      echo "OK ${BASE_URL}"
+    elif [[ "$code" == "302" || "$code" == "401" || "$code" == "403" ]]; then
+      die "Cloudflare Access 인증 필요 (HTTP ${code}) — \`cloudflared access login ${BASE_URL}\` 로 이메일 인증 후 재시도, 또는 CF_Access_Client_Id/Secret 설정"
+    else
+      die "엔드포인트 응답 없음 (HTTP ${code}) — ${BASE_URL}"
+    fi
     ;;
 
   models)

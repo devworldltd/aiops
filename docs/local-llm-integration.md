@@ -50,6 +50,18 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/llm-local.sh" vision qwen2.5vl:32b shot.png 
 
 환경변수: `LOCAL_LLM_BASE_URL`(기본 https://api.devworld.co.kr), `CF_Access_Client_Id`/`CF_Access_Client_Secret`(Cloudflare Access 서비스 토큰 — `.envrc`/direnv로 로드, 파일에 값 저장 금지).
 
+### Cloudflare Access 인증 (2026-08-19 구성)
+
+api.devworld.co.kr 은 CF Access 앱으로 보호된다 (Zero Trust 조직 devworld-ltd-ai). 스크립트의 인증 우선순위:
+
+1. **서비스 토큰** — `CF_Access_Client_Id/Secret` env (정책 `aiops-to-api` 등 Service Auth). CI·헤드리스용.
+2. **이메일 OTP** — 서비스 토큰이 없으면 `cloudflared access token --app=<URL>` 캐시 토큰을 `cf-access-token` 헤더로 사용.
+   최초 1회 `cloudflared access login https://api.devworld.co.kr` 실행 → 이메일(One-time PIN) 인증 → 세션 기간 동안 캐시 재사용.
+   허용 이메일은 앱 정책 `aiops-email-otp` (Allow) 에 등록한다.
+3. **무인증** — Bypass 정책(예: `macbook pro`)에 매칭되는 네트워크에서는 토큰 없이 통과.
+
+health 게이트가 302/401/403 을 받으면 `cloudflared access login` 안내 메시지를 출력하고 종료 코드 2.
+
 ## 4. 서빙 모델 용도 맵 (2026-08-19 기준 25종)
 
 | 용도 | 모델 | 비고 |
