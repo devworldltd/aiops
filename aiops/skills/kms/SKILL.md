@@ -11,12 +11,13 @@ description: "DevWorld KMS 연동 — Token·API Key·Password·SSH Key 등 모�
 
 | 항목 | 값 |
 |------|----|
-| KMS URL | `.claude/config.json` `kms_url` → 없으면 `http://192.168.50.51:8787` |
+| KMS URL | `.claude/config.json` `kms_url` → 없으면 `https://kms.devworld.co.kr` |
 | 인증 | 앱 전용 `KMS_TOKEN` 환경변수 (Bearer) |
+| CF Access | `CF_ACCESS_CLIENT_ID`/`CF_ACCESS_CLIENT_SECRET` 환경변수를 서비스 토큰 헤더로 동반 |
 | 환경 | `local` \| `dev` \| `stg` \| `test` \| `prod` 중 하나 |
 
 ```bash
-KMS_URL="${KMS_URL:-$(jq -r '.kms_url // "http://192.168.50.51:8787"' .claude/config.json 2>/dev/null || echo "http://192.168.50.51:8787")}"
+KMS_URL="${KMS_URL:-$(jq -r '.kms_url // "https://kms.devworld.co.kr"' .claude/config.json 2>/dev/null || echo "https://kms.devworld.co.kr")}"
 
 if [ -z "$KMS_TOKEN" ]; then
   echo "❌ KMS_TOKEN 환경변수가 없습니다. KMS Apps 상세 화면에서 앱 토큰을 발급받아 셸 환경에 설정하세요."
@@ -24,9 +25,12 @@ if [ -z "$KMS_TOKEN" ]; then
 fi
 
 KMS_H=(-H "Authorization: Bearer $KMS_TOKEN" -H "Accept: application/json" -H "Content-Type: application/json")
+if [ -n "$CF_ACCESS_CLIENT_ID" ] && [ -n "$CF_ACCESS_CLIENT_SECRET" ]; then
+  KMS_H+=(-H "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" -H "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET")
+fi
 ```
 
-> **주의**: `KMS_TOKEN`은 **앱 전용 토큰**이다. 사용자 세션 token과 혼동하지 않는다. 토큰 재발행은 KMS Apps 상세 화면에서만 수행한다.
+> **주의**: `KMS_TOKEN`은 **앱 전용 토큰**이다. 사용자 세션 token과 혼동하지 않는다. 토큰 재발행은 KMS Apps 상세 화면에서만 수행한다. `kms.devworld.co.kr`는 Cloudflare Access 뒤에 있으므로 서비스 토큰(`CF_ACCESS_CLIENT_ID`/`CF_ACCESS_CLIENT_SECRET`)이 필요하다 — 로컬 macOS 키체인의 `MBP_KMS_KEY` 항목(JSON: `client_id`/`client_secret`)에서 `~/.kms/cf-access-env.sh`로 로드된다 (구 IP 직결 방식 대체).
 
 ## 절대 원칙 (모든 서브커맨드 공통)
 

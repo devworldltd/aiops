@@ -62,6 +62,29 @@ api.devworld.co.kr 은 CF Access 앱으로 보호된다 (Zero Trust 조직 devwo
 
 health 게이트가 302/401/403 을 받으면 `cloudflared access login` 안내 메시지를 출력하고 종료 코드 2.
 
+## 3-1. Claude Code 본체를 로컬 모델로 구동 (claude-local)
+
+위 §1 은 "에이전트 루프는 Claude, 서브태스크만 로컬" 구조다. 그와 별개로 **Claude Code 자체를 로컬 모델로 돌리는** 경로도 가능하다 — api.devworld.co.kr 게이트웨이가 Anthropic `/v1/messages` 형식(텍스트·tool_use·SSE 스트리밍)을 그대로 지원하기 때문에 별도 변환 프록시(LiteLLM 등)가 필요 없다.
+
+런처: `~/.local/bin/claude-gemma` (레포 밖, 사용자 환경 파일)
+
+```bash
+claude-gemma                    # gemma4:26b-a4b-it-q8_0 로 대화형 실행
+claude-gemma -p "질문"          # 원샷
+LOCAL_MODEL=qwen3-coder-next:q8_0-tools claude-gemma   # 모델 교체
+claude-gemma --list-models      # 서빙 모델 목록
+```
+
+> 이름 주의: `~/.zshrc:193` 에 **기존 `claude-local()` 셸 함수**가 따로 있다 (localhost:11434 · qwen3-coder-64k). 셸 함수가 PATH 실행파일보다 우선하므로 이름을 `claude-gemma` 로 분리했다.
+
+전역 설정(`settings.json`)이 아니라 **런처로 분리한 이유**: `ANTHROPIC_BASE_URL` 은 세션 전역이고 claude.ai 구독 인증을 우회한다. 전역에 넣으면 평소 Opus 사용까지 전부 로컬 모델로 바뀐다. 평소에는 `claude`, 로컬로 돌릴 때만 `claude-gemma` 를 쓴다.
+
+주의:
+- 실행 중인 세션의 모델은 바꿀 수 없다 — 새 프로세스로 시작해야 한다.
+- 구독 인증이 비활성화되므로 claude.ai 커넥터가 꺼진다(경고 문구 정상).
+- `[claude-code:unrecognized_model]` 경고는 모델 ID 메타데이터 미등록 때문이며 동작에는 영향 없다.
+- 서버가 동시 1요청(`-np 1`)이라 서브에이전트 병렬 실행은 직렬화된다.
+
 ## 4. 서빙 모델 용도 맵 (2026-08-19 기준 25종)
 
 | 용도 | 모델 | 비고 |
