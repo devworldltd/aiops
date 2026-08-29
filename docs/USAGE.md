@@ -216,7 +216,15 @@ forge.sh pr-merge <n> [--delete-branch]
 
 - **본문에 `@` 를 붙이면 파일**을 읽는다. `@` 없이 파일 경로를 넘기면 **exit 3 으로 거부**한다
   (경로 문자열이 본문으로 등록되던 사고 방지). 없는 `@파일`·빈 본문도 거부한다.
-- Gitea 는 자기 PR APPROVE 불가 → `APPROVE` 요청 시 자동 COMMENT 강등(경고 출력).
+- Gitea 는 자기 PR self-approve 를 거부한다. `forge.sh pr-review <n> APPROVE` 는 3단 우선순위로 동작한다: ① `REVIEWER_TOKEN` 환경변수 있으면 즉시 그 계정으로 APPROVE ② 없고 `KMS_TOKEN` 있으면 KMS 에서 `REVIEWER_TOKEN` secret 을 조회해 APPROVE(≤15초) ③ 둘 다 없거나 실패하면 기존처럼 자동 COMMENT 강등(경고 출력). 관련 환경변수 이름(값은 여기 기재하지 않음):
+
+  | 변수 | 용도 | 기본값 |
+  |---|---|---|
+  | `REVIEWER_TOKEN` | 리뷰어 계정 토큰 직접 지정 | — |
+  | `KMS_TOKEN` | KMS 앱 토큰(② 경로 활성화 조건) | — |
+  | `REVIEWER_ENV` | KMS 조회 environment | `local` |
+  | `REVIEWER_SECRET_SERVICE` | KMS 조회 service | `aiops` |
+  | `CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET` | KMS Cloudflare Access 자격(없으면 `~/.kms/cf-access-env.sh` → `cloudflared` 순 자동 폴백) | — |
 - Gitea 인증 3단: `git credential fill` 토큰 → gitconfig `extraheader` 서비스토큰 →
   `cloudflared access token`.
 

@@ -22,11 +22,13 @@
 #   forge.sh pr-list <head> <base> [state]                  # 매칭 PR 번호
 #   forge.sh pr-view <n>                                     # PR JSON
 #   forge.sh pr-diff <n> [--name-only]
-#   forge.sh pr-review <n> <APPROVE|REQUEST_CHANGES|COMMENT> <body|@file>  # Gitea self-approve→COMMENT 강등
+#   forge.sh pr-review <n> <APPROVE|REQUEST_CHANGES|COMMENT> <body|@file>
+#     # APPROVE 는 REVIEWER_TOKEN(env→KMS) 우선, 실패 시 self-approve→COMMENT 강등
 #   forge.sh pr-merge <n> [--delete-branch]   # feature→dev 는 --delete-branch, dev→main 은 생략(head 보존)
 #   forge.sh pr-url <n>                        # 웹 PR URL (Gitea /pulls/, GitHub /pull/)
 #
 # 인증(Gitea): git credential fill 토큰 → gitconfig extraheader 서비스토큰 → cloudflared 캐시토큰.
+# 리뷰어 인증(APPROVE 전용): REVIEWER_TOKEN env → KMS reveal → 기본 AUTH 폴백. 값은 어디에도 출력하지 않음.
 set -uo pipefail
 
 # ── 초기화: forge 종류·host·owner·repo·인증 헤더 ─────────────────────
@@ -79,6 +81,17 @@ _api() {
   curl "${args[@]}" "$API$path"
 }
 
+# _api_r <METHOD> <path> [json]  — 리뷰어 토큰(_RAUTH) 전용 Gitea REST 호출 (D-5).
+#   전역 AUTH 는 절대 건드리지 않는다. _api 의 Gitea 분기를 복제한 것 — bash 3.2 는
+#   nameref/연관배열이 없어 함수 파라미터화 대신 별도 함수로 둔다.
+#   HTTP 상태 코드를 판별하기 위해 응답 마지막 줄에 코드를 붙여 반환한다(body\nHTTPCODE).
+_api_r() {
+  local method="$1" path="$2" data="${3:-}"
+  local args=(-s -X "$method" "${_RAUTH[@]}" -H "Content-Type: application/json" -w '\n%{http_code}')
+  [[ -n "$data" ]] && { [[ "$data" == @* ]] && args+=(--data-binary "@${data#@}") || args+=(-d "$data"); }
+  curl "${args[@]}" "$API$path"
+}
+
 # _guard_body <body-string|@file>
 #   `@` 를 빼고 파일 경로만 넘기는 실수를 **조용히 통과시키지 않는다.**
 #   실측 사고(2026-08-12): dev-pr 에이전트가 PR 본문에 `/tmp/…/pr_body.md` 를 그대로 넘겨
@@ -107,6 +120,224 @@ _json_body() {  # arg: body-string | @file  -> {"body": ...}
   _guard_body "$a" || return 3
   if [[ "$a" == @* ]]; then python3 -c "import json,sys;print(json.dumps({'body':open(sys.argv[1]).read()}))" "${a#@}"
   else python3 -c "import json,sys;print(json.dumps({'body':sys.argv[1]}))" "$a"; fi
+}
+
+# ── Gitea 리뷰어 토큰 (REVIEWER_TOKEN) — APPROVE 전용, cmd_pr_review 에서만 사용 ──
+#    이슈 #28 기술 스펙 D-1~D-8. 값은 프로세스 메모리에만 존재(파일·로그 금지, D-6).
+
+# _kms_cfg <key> <default>  -> stdout: .claude/config.json 의 <key> 값, 없으면 <default>
+_kms_cfg() {
+  local key="$1" def="$2"
+  [[ -f .claude/config.json ]] || { printf '%s' "$def"; return 0; }
+  python3 -c "
+import json,sys
+key,default=sys.argv[1],sys.argv[2]
+try:
+    with open('.claude/config.json') as f: cfg=json.load(f)
+    v=cfg.get(key)
+    print(v if v else default)
+except Exception:
+    print(default)
+" "$key" "$def" 2>/dev/null
+}
+
+# _kms_headers  -> 전역 _KMS_HDRS(curl --config - 용 헤더 텍스트, 메모리에만 존재) 설정.
+#   CF Access 자격: env → ~/.kms/cf-access-env.sh(서브셸 로드, 부모 env 오염 없음) → cloudflared 폴백.
+_KMS_HDRS=""
+_kms_headers() {
+  local id="" sec="" cftok=""
+  if [[ -n "${CF_ACCESS_CLIENT_ID:-}" && -n "${CF_ACCESS_CLIENT_SECRET:-}" ]]; then
+    id="$CF_ACCESS_CLIENT_ID"; sec="$CF_ACCESS_CLIENT_SECRET"
+  elif [[ -f "$HOME/.kms/cf-access-env.sh" ]]; then
+    id=$(bash -c 'source "$1" >/dev/null 2>&1; printf "%s" "${CF_ACCESS_CLIENT_ID:-}"' _ "$HOME/.kms/cf-access-env.sh" 2>/dev/null)
+    sec=$(bash -c 'source "$1" >/dev/null 2>&1; printf "%s" "${CF_ACCESS_CLIENT_SECRET:-}"' _ "$HOME/.kms/cf-access-env.sh" 2>/dev/null)
+  fi
+  if [[ -z "$id" || -z "$sec" ]]; then
+    cftok=$(cloudflared access token --app="$KMS_URL" 2>/dev/null || echo "")
+  fi
+  _KMS_HDRS=$(
+    printf 'header = "Authorization: Bearer %s"\n' "$KMS_TOKEN"
+    printf 'header = "Accept: application/json"\n'
+    if [[ -n "$id" && -n "$sec" ]]; then
+      printf 'header = "CF-Access-Client-Id: %s"\n' "$id"
+      printf 'header = "CF-Access-Client-Secret: %s"\n' "$sec"
+    elif [[ -n "$cftok" ]]; then
+      printf 'header = "cf-access-token: %s"\n' "$cftok"
+    fi
+  )
+}
+
+# _kms_call <max-time> <METHOD> <url> [data]  -> stdout: body\n<http_code> (마지막 줄이 코드)
+#   S-2 대응: KMS_TOKEN 이 담긴 헤더는 --config - 로 stdin 전달, argv 에 남기지 않는다.
+_kms_call() {
+  local maxt="$1" method="$2" url="$3" data="${4:-}"
+  if [[ -n "$data" ]]; then
+    printf '%s\n' "$_KMS_HDRS" | curl -s --max-time "$maxt" --config - -X "$method" -H "Content-Type: application/json" -d "$data" -w '\n%{http_code}' "$url" 2>/dev/null
+  else
+    printf '%s\n' "$_KMS_HDRS" | curl -s --max-time "$maxt" --config - -X "$method" -w '\n%{http_code}' "$url" 2>/dev/null
+  fi
+}
+
+# _build_rauth <token>  -> 전역 _RAUTH 배열 설정. AUTH 는 읽기 전용(D-5) — 여기서도 재대입하지 않는다.
+#   AUTH 의 Authorization 헤더(기본 토큰 + extraheader 의 basic 인증 포함)는 전부 제거 후
+#   리뷰어 Authorization 헤더 1개만 부착한다(S-8, 중복 Authorization 헤더 방지).
+_RAUTH=()
+_build_rauth() {
+  local tok="$1"
+  _RAUTH=()
+  local i=0 n=${#AUTH[@]}
+  while (( i < n )); do
+    if [[ "${AUTH[$i]}" == "-H" ]]; then
+      local v="${AUTH[$((i+1))]}"
+      local lower; lower=$(printf '%s' "$v" | tr 'A-Z' 'a-z')
+      case "$lower" in
+        authorization:*) : ;;                # 버림 — 기본 토큰/extraheader 의 Authorization 은 승계 안 함
+        *) _RAUTH+=(-H "$v") ;;               # cf-access-token / CF-Access-Client-* / 기타는 승계
+      esac
+      i=$((i+2))
+    else
+      _RAUTH+=("${AUTH[$i]}")
+      i=$((i+1))
+    fi
+  done
+  _RAUTH+=(-H "Authorization: token $tok")
+}
+
+# _reviewer_token  -> stdout: 리뷰어 토큰 or 빈 문자열(항상 return 0 — M-8, 상위로 실패 전파 금지)
+#   ① REVIEWER_TOKEN env ② KMS reveal(health→search→reveal) ③ 실패 시 빈 문자열(호출자가 기존 경로로 진행)
+#   D-3: FORGE_KIND!=gitea 이면 즉시 빈 출력(자체 가드 — GitHub 경로는 호출 자체가 없지만 이중 안전장치).
+_reviewer_token() {
+  [[ "$FORGE_KIND" == "gitea" ]] || { printf ''; return 0; }
+
+  local _xtrace=""
+  case "$-" in *x*) _xtrace=1; set +x 2>/dev/null;; esac
+
+  if [[ -n "${REVIEWER_TOKEN:-}" ]]; then
+    echo "[forge] 리뷰어 토큰: env" >&2
+    printf '%s' "$REVIEWER_TOKEN"
+    [[ -n "$_xtrace" ]] && set -x
+    return 0
+  fi
+
+  if [[ -z "${KMS_TOKEN:-}" ]]; then
+    echo "[forge] 리뷰어 토큰: 없음(KMS_TOKEN 미설정) — 기존 경로로 진행" >&2
+    [[ -n "$_xtrace" ]] && set -x
+    return 0
+  fi
+
+  KMS_URL="${KMS_URL:-$(_kms_cfg kms_url https://kms.devworld.co.kr)}"
+  local env svc
+  env="${REVIEWER_ENV:-${KMS_ENV:-$(_kms_cfg kms_env local)}}"
+  svc="${REVIEWER_SECRET_SERVICE:-$(_kms_cfg kms_service aiops)}"
+
+  case "$env" in
+    local|dev|stg|test|prod) : ;;
+    *)
+      echo "[forge] 리뷰어 토큰: 없음(environment 값 불인정: $env)" >&2
+      [[ -n "$_xtrace" ]] && set -x
+      return 0
+      ;;
+  esac
+
+  _kms_headers
+
+  local hresp hcode
+  hresp=$(_kms_call 5 GET "$KMS_URL/api/v1/health")
+  hcode=$(printf '%s\n' "$hresp" | tail -1)
+  if [[ "$hcode" != "200" ]]; then
+    if [[ "$hcode" == "401" || "$hcode" == "403" ]]; then
+      echo "[forge] 리뷰어 토큰: 없음(KMS 인증 실패 HTTP $hcode) — 앱 토큰/권한 확인" >&2
+    else
+      echo "[forge] 리뷰어 토큰: 없음(KMS 응답 없음) — 기존 경로로 진행" >&2
+    fi
+    [[ -n "$_xtrace" ]] && set -x
+    return 0
+  fi
+
+  local sresp scode sbody
+  sresp=$(_kms_call 5 GET "$KMS_URL/api/v1/secrets?q=REVIEWER_TOKEN&environment=${env}")
+  scode=$(printf '%s\n' "$sresp" | tail -1)
+  sbody=$(printf '%s\n' "$sresp" | sed '$d')
+  if [[ "$scode" == "401" || "$scode" == "403" ]]; then
+    echo "[forge] 리뷰어 토큰: 없음(KMS 인증 실패 HTTP $scode) — 앱 토큰/권한 확인" >&2
+    [[ -n "$_xtrace" ]] && set -x
+    return 0
+  fi
+
+  local sel sid
+  sel=$(python3 -c "
+import json,sys
+env,svc=sys.argv[1],sys.argv[2]
+name='REVIEWER_TOKEN'
+try:
+    items=json.load(sys.stdin).get('items') or []
+except Exception:
+    items=[]
+
+def base_match(i):
+    return (i.get('name') or '')==name and (i.get('environment') or '')==env
+
+name_env=[i for i in items if base_match(i)]
+
+tier1=[i for i in name_env if (not svc or (i.get('service') or '')==svc) and i.get('has_value')]
+if len(tier1)==1:
+    print('MATCH:'+str(tier1[0].get('id') or '')); sys.exit(0)
+if len(tier1)>1:
+    print('MANY:'+str(len(tier1))); sys.exit(0)
+
+if svc:
+    tier2=[i for i in name_env if i.get('has_value')]
+    if len(tier2)==1:
+        print('MATCH:'+str(tier2[0].get('id') or '')); sys.exit(0)
+    if len(tier2)>1:
+        print('MANY:'+str(len(tier2))); sys.exit(0)
+
+print('HASVALUE_FALSE' if name_env else 'ZERO')
+" "$env" "$svc" <<<"$sbody" 2>/dev/null)
+
+  case "$sel" in
+    MATCH:*)
+      sid="${sel#MATCH:}"
+      ;;
+    MANY:*)
+      echo "[forge] 리뷰어 토큰: 없음(KMS 후보 ${sel#MANY:}건 — service/environment 로 좁히세요)" >&2
+      [[ -n "$_xtrace" ]] && set -x
+      return 0
+      ;;
+    HASVALUE_FALSE)
+      echo "[forge] 리뷰어 토큰: 없음(KMS 값 미등록 has_value=false)" >&2
+      [[ -n "$_xtrace" ]] && set -x
+      return 0
+      ;;
+    *)
+      echo "[forge] 리뷰어 토큰: 없음(KMS 후보 0건 — REVIEWER_TOKEN 미등록 또는 앱 미연결)" >&2
+      [[ -n "$_xtrace" ]] && set -x
+      return 0
+      ;;
+  esac
+
+  local rresp rcode rbody value
+  rresp=$(_kms_call 5 POST "$KMS_URL/api/v1/secrets/${sid}/reveal" "")
+  rcode=$(printf '%s\n' "$rresp" | tail -1)
+  rbody=$(printf '%s\n' "$rresp" | sed '$d')
+  if [[ "$rcode" != "200" && "$rcode" != "201" ]]; then
+    echo "[forge] 리뷰어 토큰: 없음(KMS reveal 실패 HTTP ${rcode})" >&2
+    [[ -n "$_xtrace" ]] && set -x
+    return 0
+  fi
+  value=$(printf '%s' "$rbody" | python3 -c "import json,sys
+try: print(json.load(sys.stdin).get('value') or '')
+except Exception: print('')" 2>/dev/null)
+  if [[ -z "$value" ]]; then
+    echo "[forge] 리뷰어 토큰: 없음(KMS reveal 값 없음)" >&2
+    [[ -n "$_xtrace" ]] && set -x
+    return 0
+  fi
+
+  echo "[forge] 리뷰어 토큰: KMS (service=${svc} environment=${env})" >&2
+  printf '%s' "$value"
+  [[ -n "$_xtrace" ]] && set -x
+  return 0
 }
 
 # _resolve_labels <csv of name-or-id>  -> JSON array of numeric label IDs (Gitea).
@@ -268,6 +499,48 @@ cmd_pr_review() {
   #   python 이 `json.dumps('event':…)` 를 받아 SyntaxError 로 죽는다(리뷰가 조용히 등록되지 않았다).
   #   python 코드는 단일따옴표로 감싸 셸 확장을 원천 차단한다.
   local payload resp
+
+  # ── 리뷰어 토큰 경로 — APPROVE 전용 (D-3, 이슈 #28). REQUEST_CHANGES/COMMENT 는 KMS 호출 0건. ──
+  #    D-6-1: 토큰이 지나는 이 블록 전체(대입·_build_rauth·_api_r 호출)를 set -x 추적에서 뺀다.
+  #    _reviewer_token() 내부의 자체 억제는 명령치환 서브셸에만 적용되어 여기(호출자)의
+  #    `rtok=$(...)` 대입 자체가 트레이스에 값으로 찍히는 것은 막지 못하므로, 별도로 억제한다.
+  if [[ "$event" == "APPROVED" ]]; then
+    local _pxtrace=""
+    case "$-" in *x*) _pxtrace=1; set +x 2>/dev/null;; esac
+    local rtok; rtok=$(_reviewer_token)
+    if [[ -n "$rtok" ]]; then
+      _build_rauth "$rtok"
+      unset rtok
+      payload=$(python3 -c 'import json,sys;print(json.dumps({"event":sys.argv[1],"body":sys.argv[2]}))' "$event" "$text")
+      local raw rcode rbody rid
+      raw=$(_api_r POST "/repos/$OWNER/$REPO/pulls/$n/reviews" "$payload")
+      rcode=$(printf '%s\n' "$raw" | tail -1)
+      rbody=$(printf '%s\n' "$raw" | sed '$d')
+      _RAUTH=()   # 사용 즉시 파기 (S-9)
+      rid=$(echo "$rbody" | python3 -c "import json,sys
+try:
+    d=json.load(sys.stdin); print(d.get('id') or '')
+except Exception:
+    print('')" 2>/dev/null)
+      if [[ -n "$rid" ]]; then
+        [[ -n "$_pxtrace" ]] && set -x
+        echo "$rbody" | python3 -c "import json,sys;d=json.load(sys.stdin);print('REVIEW_ID='+str(d.get('id',''))+' STATE='+str(d.get('state','')))" 2>/dev/null
+        return 0
+      fi
+      [[ -n "$_pxtrace" ]] && set -x
+      if echo "$rbody" | grep -qi "approve your own\|self.approv"; then
+        echo "[forge] 리뷰어 토큰 계정이 PR 작성자와 동일 — self-approve 거부" >&2
+      elif [[ "$rcode" == "401" || "$rcode" == "403" ]]; then
+        echo "[forge] 리뷰어 토큰 인증 실패 — 토큰 만료/권한 확인" >&2
+      else
+        echo "[forge] 리뷰어 토큰 리뷰 등록 실패(HTTP ${rcode}) → 기본 토큰으로 1회 재시도" >&2
+      fi
+    else
+      [[ -n "$_pxtrace" ]] && set -x
+    fi
+  fi
+
+  # ── ③ 기존 경로 (완전 무변경 — 리뷰어 토큰 미확보/실패 시 여기로 떨어진다) ──
   payload=$(python3 -c 'import json,sys;print(json.dumps({"event":sys.argv[1],"body":sys.argv[2]}))' "$event" "$text")
   resp=$(_api POST "/repos/$OWNER/$REPO/pulls/$n/reviews" "$payload")
   if echo "$resp" | grep -qi "approve your own\|self.approv"; then

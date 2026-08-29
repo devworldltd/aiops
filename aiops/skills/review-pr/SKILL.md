@@ -383,7 +383,13 @@ LGTM ✅ — 모든 요구사항 충족, 컨벤션 준수"
 - REQUEST_CHANGES: `REQUEST_CHANGES`
 - COMMENT: `COMMENT`
 
-> ⚠️ 자기 PR APPROVE: Gitea 는 자기 PR 을 APPROVE 할 수 없어 forge.sh 가 자동으로 COMMENT 로 강등한다(경고만 출력). 따라서 APPROVE 판정이어도 자기 PR 은 COMMENT 리뷰로 등록되는 것이 정상이며, 머지 진행에는 영향을 주지 않는다.
+> ⚠️ 자기 PR APPROVE(Gitea): Gitea 는 자기 PR self-approve 를 거부한다. `forge.sh pr-review <n> APPROVE` 는 다음 3단 우선순위로 리뷰어 신원을 해석한다.
+>
+> 1. **`REVIEWER_TOKEN` 환경변수** — 설정돼 있으면 즉시 이 계정 명의로 APPROVE 등록(KMS 호출 없음).
+> 2. **KMS reveal** — `KMS_TOKEN` 이 설정돼 있으면 KMS 에서 `REVIEWER_TOKEN` secret 을 조회(health→search→reveal, 총 대기 ≤15초)해 그 계정 명의로 APPROVE 등록. 환경/서비스는 `REVIEWER_ENV`(기본 `local`)·`REVIEWER_SECRET_SERVICE`(기본 `aiops`)로 조정 가능. CF Access 자격은 env → `~/.kms/cf-access-env.sh` → `cloudflared` 순으로 자동 해석된다.
+> 3. **둘 다 실패/미설정** — 기존 동작대로 기본 토큰으로 시도하고, Gitea 가 self-approve 를 거부하면 자동으로 COMMENT 로 강등한다(경고만 출력).
+>
+> 따라서 `STATE=APPROVED`(리뷰어 토큰 해석 성공)와 `STATE=COMMENTED`(강등)는 **둘 다 정상 결과**이며, 어느 쪽이든 머지 진행에는 영향을 주지 않는다. 토큰 값은 어떤 로그·이슈 댓글·PR 본문에도 출력되지 않는다(이슈 #28).
 
 ### 인라인(라인-레벨) 코멘트
 

@@ -46,7 +46,8 @@ aiops-v1/
 - **`scripts/forge.sh`** — 실행형 CLI(소싱 금지). `forge.sh repo`, `issue-comment/comments/view/create/list/search/close`, `pr-create/list/view/diff/review/merge/url`. GitHub 이면 내부에서 `gh`, 그 외(Gitea)면 REST API(`/api/v1`).
 - **`scripts/actions-wait.sh`** — CI/CD run 대기(`RUN_ID/RUN_URL/CONCLUSION` 계약).
 - **Gitea 인증(CF Access 대응)**: `git credential fill` 토큰 → gitconfig `extraheader` 서비스토큰 → `cloudflared access token`(cf-access-token 헤더). Access 302 는 `/version` JSON 유무로 판정.
-- **Gitea 특성**: 자기 PR APPROVE 불가 → `forge.sh pr-review APPROVE` 는 자동 COMMENT 강등. PR URL 은 `/{owner}/{repo}/pulls/N`(복수형). `setup` 은 `.gitea/workflows/` → `gitea-actions` 를 감지.
+- **Gitea 특성**: 자기 PR self-approve 불가. `forge.sh pr-review APPROVE` 는 `REVIEWER_TOKEN`(env→KMS reveal) 해석에 성공하면 실제 APPROVE, 미해석 시 기존처럼 자동 COMMENT 강등.
+  PR URL 은 `/{owner}/{repo}/pulls/N`(복수형). `setup` 은 `.gitea/workflows/` → `gitea-actions` 를 감지.
 - 모바일 CI 템플릿은 `templates/mobile-ci/.gitea/workflows/`(iOS 는 self-hosted macOS 러너).
 
 ## 전제 조건

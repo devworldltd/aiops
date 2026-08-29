@@ -802,6 +802,7 @@ STEP 9에서 생성된 PR 번호를 인자로 전달:
 - PR diff 전체 분석 (보안 / 품질 / 아키텍처 / 테스트 체크리스트)
 - 판정:
   - **APPROVE**: P0 이슈 없음 → `forge.sh pr-review <PR> APPROVE`
+    - Gitea 는 `REVIEWER_TOKEN`(env→KMS) 이 해석되면 `STATE=APPROVED`, 해석되지 않으면 self-approve→`STATE=COMMENTED` 로 강등되며 **어느 쪽도 STEP 10 통과로 간주**한다(이슈 #28).
   - **REQUEST_CHANGES**: P0 이슈 발견 → `forge.sh pr-review <PR> REQUEST_CHANGES` → dev-backend/dev-frontend 재호출 → STEP 6(재배포) → STEP 7(재Unit QA) → STEP 8(재E2E) → STEP 9(PR 업데이트) → STEP 10(재리뷰)
   - **COMMENT**: 권고사항만 → `forge.sh pr-review <PR> COMMENT`
 - 인라인 코멘트: 구체적 수정 위치가 있으면 파일/라인 지정하여 등록

@@ -171,3 +171,4 @@ JSON
 
 - `dev-backend`·`dev-frontend`·`dev-devops` 등이 개발 중 credential이 필요하면 `.env`에 평문을 넣는 대신 본 스킬 절차(§1→§2→§3)로 조회한다.
 - `/aiops:e2e-onboard`의 NFR-3(시크릿 평문 금지)과 동일 원칙을 공유한다 — 산출물에는 키 **이름**과 자리표시자만.
+- `aiops/scripts/forge.sh pr-review <n> APPROVE`(Gitea) 는 §1→§2→§3 절차를 **런타임 셸에서 직접** 수행한다 — 별도 스킬 호출 없이 `_reviewer_token()` 함수가 health→search→reveal 을 인라인으로 실행해 `REVIEWER_TOKEN` secret(service=`aiops` 기본)을 조회하고, self-approve 회피용 리뷰어 계정 명의로 PR 을 APPROVE 한다(이슈 #28). `KMS_TOKEN` 미설정 시 조용히 건너뛰고 기존 COMMENT 강등 경로로 폴백한다.

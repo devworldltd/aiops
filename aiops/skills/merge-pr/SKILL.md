@@ -69,6 +69,7 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/forge.sh" pr-view <PR_NUMBER>
 
 - `state` 가 `open` 인지만 확인 (닫힘/머지됨이면 §4 스킵).
 - Gitea 는 `reviewDecision` / `statusCheckRollup` 개념이 없으므로 approve 상태·CI 롤업 사전확인은 **생략**합니다. CI 통과 여부는 §12 의 `actions-wait.sh` 로 머지 후 검증합니다.
+- `forge.sh pr-review APPROVE` 가 `REVIEWER_TOKEN`(env→KMS) 경로로 해석되면 PR 에 실제 `APPROVED` 리뷰가 남지만, **머지 게이트는 여전히 이를 전제하지 않습니다**(리뷰어 토큰 미보유 환경에서는 COMMENT 강등이 정상이므로 §4 진행에 영향 없음, 이슈 #28).
 
 ## 4. PR 병합
 
