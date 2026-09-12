@@ -6,7 +6,7 @@ DevWorld **AI DevOps 워크플로**를 **Claude Code 플러그인 네이티브**
 > 개발 정본은 사내 Gitea 다. 공개본에는 **릴리스 트리만 새 히스토리로** 게시된다.
 >
 > 📖 **[`docs/USAGE.md`](docs/USAGE.md) — 의도 · 정책 · 결과물 포함 전체 사용법.**
-> 스킬 33개·에이전트 25개의 목록과 결과물, 마커 헤더 인터페이스, 게이트 통과 조건,
+> 스킬 34개·에이전트 26개의 목록과 결과물, 마커 헤더 인터페이스, 게이트 통과 조건,
 > 설정 표면(`config.json`·`profile.yaml`·`git config aiops.*`), 알려진 한계까지.
 
 ## 왜 v1 인가 (설계 배경)
@@ -144,6 +144,8 @@ ls ~/.claude/plugins/cache/aiops/aiops/<버전>/skills/ | wc -l    # 32
 - 그래서 **프로젝트 `settings.json` 에는 고정 태그를 쓰고**(팀 공유 선언), 개인이 앞서 보고 싶을 때만 `latest` 를 쓰는 편을 권한다.
 
 ## 릴리스 (메인테이너)
+
+**절차 정본은 [`docs/release/release-checklist.md`](docs/release/release-checklist.md)** — 게이트(하니스 7종·매니페스트 검증), 수치 정합, 상승 폭 기준, 순서. 릴리스별 기록은 [`docs/release/`](docs/release/) 에 `v<버전>.md` 로 남는다(v1.10.0 부터).
 
 태그 규약의 소유자는 **`tools/release.sh`** 다. 손으로 `git tag` 하지 않는다 — `latest` 이동을 잊으면 `#latest` 사용자가 낡은 버전을 최신이라 믿게 된다.
 

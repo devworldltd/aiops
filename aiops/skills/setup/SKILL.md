@@ -82,11 +82,74 @@ find . -maxdepth 3 \( -name "*.csproj" -o -name "*.sln" \) -print -quit 2>/dev/n
 [WARN] .claude/config.json 없음 — install.sh를 먼저 실행하세요.
 ```
 
+config.json 갱신은 **아래 공용 헬퍼 `_config_update` 를 반드시 경유한다**(이슈 #35).
+고정 `/tmp` 경로를 직접 쓰지 말 것 — 동시 실행 교차 오염과 심볼릭 링크 공격 표면이 된다.
+
+```bash
+# >>> setup:config-update >>>
+# .claude/config.json 원자적 갱신 헬퍼 — 이슈 #35 D-1~D-5 확정.
+# 사용법: _config_update '<jq 필터>' [jq 추가 인자…]
+#   예: _config_update '.tech_stack = $ts' --argjson ts "$TECH_STACK"
+# 대상 경로: $CONFIG_PATH (기본 .claude/config.json). 임시 파일은 대상과 같은
+# 디렉터리에 mktemp 무작위 이름(0600)으로 만들어 mv 가 같은 FS 내 원자적 rename 이
+# 되게 한다. 실패 시 원본 바이트 불변 + 임시 파일 제거 + return 1.
+_config_update() {
+  local filter="$1"; shift
+  local cfg="${CONFIG_PATH:-.claude/config.json}"
+  local dir tmp rc
+
+  if [[ ! -f "$cfg" ]]; then
+    echo "[WARN] .claude/config.json 없음 — install.sh를 먼저 실행하세요." >&2
+    return 1
+  fi
+
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "[setup] ERROR: jq 미설치 — config.json 갱신 불가." >&2
+    return 1
+  fi
+
+  dir="$(dirname "$cfg")"
+  tmp="$(mktemp "$dir/.config.XXXXXX" 2>/dev/null)" || {
+    echo "[setup] ERROR: 임시 파일 생성 실패 ($dir) — 디스크 공간/쓰기 권한을 확인하세요." >&2
+    return 1
+  }
+
+  if jq "$@" "$filter" "$cfg" > "$tmp" 2>/dev/null; then
+    :
+  else
+    rc=$?
+    rm -f "$tmp"
+    echo "[setup] ERROR: config.json 갱신 실패 — jq 종료 코드 $rc. 원본은 변경되지 않았습니다." >&2
+    return 1
+  fi
+
+  # jq 가 rc=0 이어도 빈 출력/비-JSON 이면 데이터 손실 방지를 위해 실패 처리한다 (T22).
+  if [[ ! -s "$tmp" ]] || ! jq -e . "$tmp" >/dev/null 2>&1; then
+    rm -f "$tmp"
+    echo "[setup] ERROR: config.json 갱신 실패 — jq 출력이 비어있거나 유효한 JSON이 아닙니다. 원본은 변경되지 않았습니다." >&2
+    return 1
+  fi
+
+  if ! mv "$tmp" "$cfg"; then
+    rm -f "$tmp"
+    echo "[setup] ERROR: config.json 교체 실패 ($cfg) — 원본은 변경되지 않았습니다." >&2
+    return 1
+  fi
+  return 0
+}
+# <<< setup:config-update <<<
+```
+
+> 위 코드를 감싼 `setup:config-update` 시작/종료 주석 앵커는 테스트
+> (`aiops/tests/setup-config-update.test.sh`, `aiops/tests/setup-prod-workflow-detect.test.sh`)
+> 가 코드를 추출하는 지점이다. 앵커 문자열 자체를 바꾸지 말 것.
+
 **jq 사용 가능 시:**
 ```bash
 TECH_STACK='["node","hono","python","fastapi"]'
-jq --argjson ts "$TECH_STACK" '.tech_stack = $ts' .claude/config.json > /tmp/config_tmp.json \
-  && mv /tmp/config_tmp.json .claude/config.json
+if ! _config_update '.tech_stack = $ts' --argjson ts "$TECH_STACK"; then
+  echo "[setup] §5 WARN: tech_stack 기입 실패 — 위 오류를 확인하세요"
+fi
 ```
 
 **jq 미설치 시 Python 폴백:**
@@ -237,6 +300,86 @@ fi
 | `.gitlab-ci.yml` | `gitlab-ci` |
 | `.circleci/` | `circleci` |
 
+#### 10-1. prod 전용 배포 워크플로우 감지 (deploy_workflow_prod, 이슈 #33)
+
+dev 배포와 prod 배포가 서로 다른 워크플로우 파일인 레포(예: `deploy-dev.yml` / `deploy-prod.yml`)를 위해,
+워크플로우 디렉터리(`.gitea/workflows/` 우선, 없으면 `.github/workflows/`)의 `*.yml`·`*.yaml` 중
+아래 두 조건 **중 하나**를 만족하는 파일을 prod 후보로 본다. YAML 파서는 도입하지 않고 `grep` 만 쓴다.
+
+1. 파일명에 `prod` 포함 (대소문자 무시)
+2. `branches:` 트리거가 `main` 또는 `master` **단독** (`branches: [main]`, `branches:\n  - main` 형태 모두 인식)
+
+- 후보가 **정확히 1개**일 때만 `.claude/config.json` 에 `deploy_workflow_prod` 를 기입한다. 이미 값이 있으면 **덮어쓰지 않는다.**
+- 후보가 **0개**면 키를 만들지 않는다(기존 레포 무영향).
+- 후보가 **2개 이상**이면 자동 기입하지 않고 후보 목록을 출력한다(오기입 방지).
+- 워크플로우 디렉터리 자체가 없으면 아무 출력 없이 조용히 스킵한다.
+
+```bash
+# >>> setup:prod-workflow-detect >>>
+# prod 전용 배포 워크플로우 감지 (deploy_workflow_prod) — 이슈 #33 D-5 확정.
+# YAML 파서 미도입 — grep 기반 휴리스틱. .gitea/workflows 우선, 없으면 .github/workflows.
+WFDIR=""
+if [[ -d ".gitea/workflows" ]]; then
+  WFDIR=".gitea/workflows"
+elif [[ -d ".github/workflows" ]]; then
+  WFDIR=".github/workflows"
+fi
+
+if [[ -n "$WFDIR" ]]; then
+  PROD_CANDIDATES=()
+  while IFS= read -r -d '' _f; do
+    _base=$(basename "$_f")
+    _lname=$(printf '%s' "$_base" | tr '[:upper:]' '[:lower:]')
+    _is_prod=0
+    if [[ "$_lname" == *prod* ]]; then
+      _is_prod=1
+    else
+      # branches: 줄 + 뒤따르는 `- 브랜치명` 목록 줄만 훑어 트리거 토큰을 추출한다 (YAML 파서 미도입).
+      # 예: `branches: [main]` 한 줄 표기, 또는 `branches:\n  - main` 목록 표기 모두 인식.
+      _btext=$(awk '
+        /^[[:space:]]*branches:/ { print; inblock=1; next }
+        inblock && /^[[:space:]]*-[[:space:]]*[A-Za-z0-9_.\/-]+[[:space:]]*$/ { print; next }
+        { inblock=0 }
+      ' "$_f" 2>/dev/null || true)
+      if [[ -n "$_btext" ]]; then
+        _tokens=$(printf '%s\n' "$_btext" \
+          | grep -oE '[A-Za-z0-9_./-]+' \
+          | grep -vE '^-+$' \
+          | grep -vE '^(branches|on|push|pull_request)$' \
+          | sort -u | tr '\n' ' ')
+        _tokens="${_tokens% }"
+        if [[ "$_tokens" == "main" || "$_tokens" == "master" ]]; then
+          _is_prod=1
+        fi
+      fi
+    fi
+    [[ "$_is_prod" == "1" ]] && PROD_CANDIDATES+=("$_base")
+  done < <(find "$WFDIR" -maxdepth 1 \( -name "*.yml" -o -name "*.yaml" \) -print0 2>/dev/null)
+
+  PROD_COUNT=${#PROD_CANDIDATES[@]}
+  if [[ "$PROD_COUNT" == "1" ]]; then
+    _existing=$(jq -r '.deploy_workflow_prod // empty' .claude/config.json 2>/dev/null || echo "")
+    if [[ -z "$_existing" ]]; then
+      if _config_update '.deploy_workflow_prod = $v' --arg v "${PROD_CANDIDATES[0]}"; then
+        echo "[setup] §10-1 prod 워크플로우 감지: ${PROD_CANDIDATES[0]} → deploy_workflow_prod 기입"
+      else
+        echo "[setup] §10-1 WARN: deploy_workflow_prod 기입 실패 — 위 오류를 확인하세요"
+      fi
+    else
+      echo "[setup] §10-1 deploy_workflow_prod 기존 값 보존: $_existing (덮어쓰기 금지)"
+    fi
+  elif [[ "$PROD_COUNT" -ge 2 ]]; then
+    echo "[setup] §10-1 WARN: prod 워크플로우 후보 다수 — 자동 기입 생략: ${PROD_CANDIDATES[*]}"
+    echo "[setup] §10-1 .claude/config.json 의 deploy_workflow_prod 를 직접 지정하세요"
+  fi
+  # PROD_COUNT -eq 0 → 아무 것도 하지 않음(키 미생성, AC-R11)
+fi
+# WFDIR 이 빈 문자열(워크플로우 디렉터리 자체 부재) → 조용히 스킵 (T22)
+# <<< setup:prod-workflow-detect <<<
+```
+
+> 위 코드를 감싼 `setup:prod-workflow-detect` 시작/종료 주석 앵커는 테스트(`aiops/tests/setup-prod-workflow-detect.test.sh`)가 코드를 추출하는 지점이다. 앵커 문자열 자체를 바꾸지 말 것.
+
 ### 11. 매핑 테이블 (profile.yaml stack 필드)
 
 §7~§8 결과를 다음 단일 식별자로 매핑한다.
@@ -248,6 +391,7 @@ fi
 | `django` | `django` |
 | `nestjs` | `nestjs` |
 | `hono` + Hono-as-backend 휴리스틱(§8-1 R2/R3) | `hono-ts` |
+| `bin` 엔트리 + typescript 또는 javascript + 웹 프레임워크 미감지 (= §16 `platform=cli`) | `node-cli` |
 | 그 외 / 미지원 | `none` |
 
 | frontend/admin 감지 | profile.yaml stack |
@@ -372,8 +516,9 @@ fi
 
 jq 사용 예:
 ```bash
-jq --argjson hints "$AGENT_HINTS_JSON" '.agent_hints = $hints' .claude/config.json > /tmp/c.json \
-  && mv /tmp/c.json .claude/config.json
+if ! _config_update '.agent_hints = $hints' --argjson hints "$AGENT_HINTS_JSON"; then
+  echo "[setup] §13 WARN: agent_hints 기입 실패 — 위 오류를 확인하세요"
+fi
 ```
 
 ### 14. 사용자 확인 UI
@@ -420,6 +565,32 @@ CI:         gitea-actions
 
 위 정보로 진행하시겠습니까? [Y/n]:
 ```
+
+`platform=cli` 인 경우 (#16 신규) — 모바일 절 생략, `CLI 엔트리:` 행 추가, `배포:` 미감지 시 안내 문구, 참고 2줄:
+
+```
+=== /aiops:setup 감지 결과 ===
+플랫폼:     cli (터미널 CLI — 웹/모바일 미감지, bin 엔트리 감지)
+언어:       typescript
+프레임워크: node-cli
+CLI 엔트리: dwc → dist/cli.js
+구조:       single
+테스트:     vitest
+배포:       없음 (배포 매니페스트 미감지)
+헬스체크:   자동 스킵 (dev_url / prod_url 미생성 — 배포 대상 없음, #42)
+CI:         gitea-actions
+
+참고: platform=cli 는 npm bin 엔트리 기반 터미널 도구를 뜻합니다.
+      profile 은 전용 세트 없이 표준 web 세트를 그대로 사용합니다 (#16).
+
+생성될 파일:
+  .reviewer/profile.yaml (신규 또는 덮어쓰기)
+  .claude/config.json (agent_hints 필드 추가)
+
+위 정보로 진행하시겠습니까? [Y/n]:
+```
+
+`CLI 엔트리:` 값 규칙: `bin` 이 문자열이면 `<패키지명> → <경로>`, 객체면 첫 3개 항목 후 `외 N개`.
 
 사용자가 `n` 입력 시 중단. 그 외(엔터 포함)는 진행.
 
@@ -481,7 +652,47 @@ fi
 | O | X | `web` (기본, 역호환) |
 | X | O | `mobile` |
 | O | O | `both` |
-| X | X | `web` (안전 기본값) |
+| X | X + `bin` O + 웹배포매니페스트 X | `cli` (신규, #16) |
+| X | X (그 외) | `web` (안전 기본값) |
+
+CLI 판정 보조 조건표 (#16 신규):
+
+| 조건 | 값 |
+|---|---|
+| `package.json` `bin` (문자열 또는 원소 ≥1 객체) | `node-cli` |
+| `pyproject.toml` `[project.scripts]` | `python-cli` (**예약** — 후속 이슈, 이번 범위 아님) |
+
+CLI 판정을 무효화하는 것은 **웹 호스팅 매니페스트만**이다: `wrangler.toml`·`wrangler.jsonc`·`vercel.json`·`netlify.toml`·`fly.toml`·`serverless.yml`(루트만 검사). **`Dockerfile` 은 제외 조건이 아니다** — CLI 도 Docker 로 배포되므로 `deploy_target=docker` 로 §10 에 계속 기록되되 platform 판정에는 쓰이지 않는다.
+
+```bash
+# >>> setup:platform-detect >>>
+# 선행 변수(앵커 밖): WEB_DETECTED(§1~§3·§7), MOBILE_DETECTED(§15) — "true"|"false"
+WEB_DETECTED="${WEB_DETECTED:-false}"; MOBILE_DETECTED="${MOBILE_DETECTED:-false}"
+HAS_BIN=false                      # (1) package.json bin — 빈 객체 {} 는 미판정
+if [[ -f package.json ]]; then
+  if command -v jq >/dev/null 2>&1; then
+    _bin=$(jq -r 'if ((.bin|type)=="string" or (.bin|type)=="object") and ((.bin|length)>0)
+                  then "yes" else "no" end' package.json 2>/dev/null || echo "no")
+    [[ "$_bin" == "yes" ]] && HAS_BIN=true
+  else
+    grep -q '"bin"[[:space:]]*:' package.json 2>/dev/null && HAS_BIN=true
+  fi
+fi
+HAS_WEB_DEPLOY_MANIFEST=false      # (2) 웹 호스팅 매니페스트 (Dockerfile 불포함 — 결정 (b))
+for _m in wrangler.toml wrangler.jsonc vercel.json netlify.toml fly.toml serverless.yml; do
+  [[ -f "$_m" ]] && { HAS_WEB_DEPLOY_MANIFEST=true; break; }
+done
+if   [[ "$WEB_DETECTED" == "true" && "$MOBILE_DETECTED" == "true" ]]; then PLATFORM="both"
+elif [[ "$MOBILE_DETECTED" == "true" ]]; then PLATFORM="mobile"
+elif [[ "$WEB_DETECTED" == "true" ]];    then PLATFORM="web"
+elif [[ "$HAS_BIN" == "true" && "$HAS_WEB_DEPLOY_MANIFEST" == "false" ]]; then PLATFORM="cli"
+else PLATFORM="web"
+fi
+echo "[setup] §16 platform=$PLATFORM (web=$WEB_DETECTED mobile=$MOBILE_DETECTED bin=$HAS_BIN web_manifest=$HAS_WEB_DEPLOY_MANIFEST)"
+# <<< setup:platform-detect <<<
+```
+
+앵커 문자열은 `aiops/tests/setup-platform-detect.test.sh` 의 추출 지점이므로 변경 금지. bash 3.2 준수(연관배열·`${v,,}`·`mapfile` 미사용), jq 부재 시 grep 폴백은 `"bin"[[:space:]]*:` 키 패턴만 확인한다(오탐 방지를 위한 값 검사는 하지 않음 — jq 가용 환경을 권장).
 
 `mobile.framework` 값 결정 (다중 가능 → 배열):
 
@@ -518,11 +729,11 @@ fi
 
 repo: OWNER/NAME                   # forge.sh repo (→ owner/repo)
 forge: github | gitea              # 선택 — 생략 시 origin 리모트로 자동감지(forge.sh kind)
-platform: web | mobile | both      # 신규 (기본 web, 역호환)
+platform: web | mobile | both | cli   # cli 는 #16 신규 (기본 web, 역호환)
 structure: single | monorepo | monorepo-submodules
 
 stack:
-  backend: fastapi-sqlalchemy | fastapi-sqlite | django | nestjs | none
+  backend: fastapi-sqlalchemy | fastapi-sqlite | django | nestjs | node-cli | none
   frontend: hono-ts | nextjs | react | vue | svelte | none
   admin: hono-ts | nextjs | none
 
@@ -537,6 +748,8 @@ max_diff_loc: 1500
 ```
 
 `.claude/config.json` 의 `agent_hints` 도 동일 정보를 반영한다 (§13 스키마에 `platform`, `mobile` 필드 추가).
+
+`agent_hints.platform` 허용값: `web | mobile | both | cli` (cli 는 #16 신규, 끝에 추가하여 기존 diff 최소화).
 
 ```json
 {
@@ -564,14 +777,18 @@ max_diff_loc: 1500
 | platform | mobile.framework | 자동 profile |
 |----------|------------------|------------|
 | web | (없음) | `web` |
+| cli | (없음) | `web` (전용 프로필 신설 없이 표준 세트 재사용, #16) |
 | mobile | android-native 또는 ios-native | `mobile` |
 | mobile | react-native 또는 flutter | `mobile` |
 | both | (모두) | `full` |
 | (감지 실패) | — | `minimal` |
 
 ```bash
+# >>> setup:profile-register >>>
+# 선행 변수: $PLATFORM (§10 감지 결과). 헬퍼 _config_update 정의가 앞서야 한다.
 case "$PLATFORM" in
   web)    AUTO_PROFILE="web" ;;
+  cli)    AUTO_PROFILE="web" ;;   # #16 — 전용 프로필 신설 없이 표준 세트 재사용
   mobile) AUTO_PROFILE="mobile" ;;
   both)   AUTO_PROFILE="full" ;;
   *)      AUTO_PROFILE="minimal" ;;
@@ -580,13 +797,16 @@ esac
 # 기존 profile 보존 (사용자 수동 변경 우선)
 CURRENT_PROFILE=$(jq -r '.profile // empty' .claude/config.json 2>/dev/null)
 if [[ -z "$CURRENT_PROFILE" ]]; then
-  jq --arg p "$AUTO_PROFILE" '.profile = $p' .claude/config.json > .claude/config.json.tmp \
-    && mv .claude/config.json.tmp .claude/config.json
-  echo "[/aiops:setup] profile=$AUTO_PROFILE 자동 등록 (#161)"
-  echo "         변경하려면: install.sh --profile=<web|mobile|full|minimal|reviewer> 재실행"
+  if _config_update '.profile = $p' --arg p "$AUTO_PROFILE"; then
+    echo "[/aiops:setup] profile=$AUTO_PROFILE 자동 등록 (#161)"
+    echo "         변경하려면: install.sh --profile=<web|mobile|full|minimal|reviewer> 재실행"
+  else
+    echo "[setup] §18 WARN: profile 기입 실패 — 위 오류를 확인하세요"
+  fi
 else
   echo "[/aiops:setup] profile=$CURRENT_PROFILE 보존 (사용자 명시 또는 이전 설정)"
 fi
+# <<< setup:profile-register <<<
 ```
 
 §13 사용자 확인 UI 출력에 profile 추가:
@@ -621,10 +841,12 @@ PRESERVE_PROFILE=$(jq -c '.profile // null' .claude/config.json 2>/dev/null || e
 # 새 값으로 갱신할 때는 정밀 감지 결과가 있을 때만 덮어쓰기
 NEW_HINTS=$(detect_agent_hints)  # 정밀 감지
 if [[ -n "$NEW_HINTS" && "$NEW_HINTS" != "null" ]]; then
-  jq --argjson h "$NEW_HINTS" '.agent_hints = $h' .claude/config.json > tmp && mv tmp .claude/config.json
+  _config_update '.agent_hints = $h' --argjson h "$NEW_HINTS" \
+    || echo "[setup] §19 WARN: agent_hints 기입 실패 — 위 오류를 확인하세요"
 else
   # 감지 실패 — 기존 값 보존
-  jq --argjson h "$PRESERVE_AGENT_HINTS" '.agent_hints = $h' .claude/config.json > tmp && mv tmp .claude/config.json
+  _config_update '.agent_hints = $h' --argjson h "$PRESERVE_AGENT_HINTS" \
+    || echo "[setup] §19 WARN: agent_hints 기입 실패 — 위 오류를 확인하세요"
 fi
 ```
 

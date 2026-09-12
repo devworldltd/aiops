@@ -10,6 +10,7 @@ description: "`.envrc`의 secret들을 DevWorld KMS에 일괄 등록한다. `.en
 - 인증은 `.envrc` 안의 **`KMS_TOKEN`**을 사용한다 (셸 환경변수가 아니라 파일에서 직접 읽는다).
 - 등록 대상 secret 하나당 **environment 3개(local/dev/prod)**에 **이름·값 동일**하게 3개의 KMS secret을 만든다 (KMS는 name+service+environment 조합으로 구분하므로 environment별 레코드가 별도로 필요하다).
 - 이미 같은 이름의 secret이 있으면: **값이 같으면 그냥 진행(스킵)**, **값이 다르면 사용자에게 확인**한다 — 절대 조용히 덮어쓰지 않는다.
+- 신규 등록(`NEW`)은 `.envrc`의 `KMS_TOKEN`만으로 승인 게이트를 통과한다 — `KMS_WRITE_APPROVAL_TOKEN` 같은 별도 승인 토큰은 요구하지 않는다 (`/aiops:kms` §4 전제 조건 및 aiops-codex v0.4.4와 동일 규약). 사용자 확인이 필요한 것은 `CONFLICT` 건뿐이다.
 
 ## 절대 원칙 (`/aiops:kms`와 동일 + 추가)
 
@@ -72,7 +73,10 @@ KMS_TOKEN="$(printf '%s' "$ENVRC_DUMP_RAW" | awk -F'\x1f' -v RS='\x1e' '$1=="KMS
 
 KMS_URL="${KMS_URL:-$(jq -r '.kms_url // "https://kms.devworld.co.kr"' .claude/config.json 2>/dev/null || echo "https://kms.devworld.co.kr")}"
 KMS_H=(-H "Authorization: Bearer $KMS_TOKEN" -H "Accept: application/json" -H "Content-Type: application/json")
-# CF Access 서비스 토큰이 셸에 있으면(=~/.kms/cf-access-env.sh 로드됨) 동반한다
+# CF Access 자격 체인 초기화 (의무) — KMS용 CF 자격이 셸에 없거나 다른 용도의 자격이
+# 남아 있으면 302 거부되므로, 항상 unset 후 키체인(MBP_KMS_KEY) 체인을 재로드한다.
+unset CF_ACCESS_CLIENT_ID CF_ACCESS_CLIENT_SECRET
+[ -f ~/.kms/cf-access-env.sh ] && source ~/.kms/cf-access-env.sh
 [[ -n "$CF_ACCESS_CLIENT_ID" && -n "$CF_ACCESS_CLIENT_SECRET" ]] && \
   KMS_H+=(-H "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" -H "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET")
 

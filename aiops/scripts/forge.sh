@@ -142,15 +142,18 @@ except Exception:
 }
 
 # _kms_headers  -> 전역 _KMS_HDRS(curl --config - 용 헤더 텍스트, 메모리에만 존재) 설정.
-#   CF Access 자격: env → ~/.kms/cf-access-env.sh(서브셸 로드, 부모 env 오염 없음) → cloudflared 폴백.
+#   CF Access 자격: ~/.kms/cf-access-env.sh(서브셸 로드, 부모 env 오염 없음) → env → cloudflared 폴백.
+#   키체인 체인이 최우선 — 셸에 남은 CF 자격은 KMS용이 아닐 수 있어(타 용도 자격은
+#   KMS Access 앱에서 302 거부) env 값은 체인 파일이 없을 때만 쓴다.
 _KMS_HDRS=""
 _kms_headers() {
   local id="" sec="" cftok=""
-  if [[ -n "${CF_ACCESS_CLIENT_ID:-}" && -n "${CF_ACCESS_CLIENT_SECRET:-}" ]]; then
+  if [[ -f "$HOME/.kms/cf-access-env.sh" ]]; then
+    id=$(bash -c 'unset CF_ACCESS_CLIENT_ID CF_ACCESS_CLIENT_SECRET; source "$1" >/dev/null 2>&1; printf "%s" "${CF_ACCESS_CLIENT_ID:-}"' _ "$HOME/.kms/cf-access-env.sh" 2>/dev/null)
+    sec=$(bash -c 'unset CF_ACCESS_CLIENT_ID CF_ACCESS_CLIENT_SECRET; source "$1" >/dev/null 2>&1; printf "%s" "${CF_ACCESS_CLIENT_SECRET:-}"' _ "$HOME/.kms/cf-access-env.sh" 2>/dev/null)
+  fi
+  if [[ -z "$id" || -z "$sec" ]] && [[ -n "${CF_ACCESS_CLIENT_ID:-}" && -n "${CF_ACCESS_CLIENT_SECRET:-}" ]]; then
     id="$CF_ACCESS_CLIENT_ID"; sec="$CF_ACCESS_CLIENT_SECRET"
-  elif [[ -f "$HOME/.kms/cf-access-env.sh" ]]; then
-    id=$(bash -c 'source "$1" >/dev/null 2>&1; printf "%s" "${CF_ACCESS_CLIENT_ID:-}"' _ "$HOME/.kms/cf-access-env.sh" 2>/dev/null)
-    sec=$(bash -c 'source "$1" >/dev/null 2>&1; printf "%s" "${CF_ACCESS_CLIENT_SECRET:-}"' _ "$HOME/.kms/cf-access-env.sh" 2>/dev/null)
   fi
   if [[ -z "$id" || -z "$sec" ]]; then
     cftok=$(cloudflared access token --app="$KMS_URL" 2>/dev/null || echo "")

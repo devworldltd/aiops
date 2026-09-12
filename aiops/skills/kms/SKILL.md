@@ -13,10 +13,16 @@ description: "DevWorld KMS 연동 — Token·API Key·Password·SSH Key 등 모�
 |------|----|
 | KMS URL | `.claude/config.json` `kms_url` → 없으면 `https://kms.devworld.co.kr` |
 | 인증 | 앱 전용 `KMS_TOKEN` 환경변수 (Bearer) |
-| CF Access | `CF_ACCESS_CLIENT_ID`/`CF_ACCESS_CLIENT_SECRET` 환경변수를 서비스 토큰 헤더로 동반 |
+| CF Access | KMS 호출 전 `unset CF_ACCESS_CLIENT_ID CF_ACCESS_CLIENT_SECRET` 후 `source ~/.kms/cf-access-env.sh` 로 로드한 값을 서비스 토큰 헤더로 동반 (자격 미로드·타 용도 자격 잔존 모두 302 거부됨) |
 | 환경 | `local` \| `dev` \| `stg` \| `test` \| `prod` 중 하나 |
 
 ```bash
+# CF Access 자격 체인 초기화 (의무) — KMS용 CF Access 자격이 셸에 없거나(.envrc 는
+# 보통 KMS_TOKEN 만 제공) 다른 용도의 CF 자격이 남아 있으면 302 로 거부되므로,
+# 항상 unset 후 키체인(MBP_KMS_KEY) 체인을 다시 로드한다.
+unset CF_ACCESS_CLIENT_ID CF_ACCESS_CLIENT_SECRET
+[ -f ~/.kms/cf-access-env.sh ] && source ~/.kms/cf-access-env.sh
+
 KMS_URL="${KMS_URL:-$(jq -r '.kms_url // "https://kms.devworld.co.kr"' .claude/config.json 2>/dev/null || echo "https://kms.devworld.co.kr")}"
 
 if [ -z "$KMS_TOKEN" ]; then
@@ -30,7 +36,7 @@ if [ -n "$CF_ACCESS_CLIENT_ID" ] && [ -n "$CF_ACCESS_CLIENT_SECRET" ]; then
 fi
 ```
 
-> **주의**: `KMS_TOKEN`은 **앱 전용 토큰**이다. 사용자 세션 token과 혼동하지 않는다. 토큰 재발행은 KMS Apps 상세 화면에서만 수행한다. `kms.devworld.co.kr`는 Cloudflare Access 뒤에 있으므로 서비스 토큰(`CF_ACCESS_CLIENT_ID`/`CF_ACCESS_CLIENT_SECRET`)이 필요하다 — 로컬 macOS 키체인의 `MBP_KMS_KEY` 항목(JSON: `client_id`/`client_secret`)에서 `~/.kms/cf-access-env.sh`로 로드된다 (구 IP 직결 방식 대체).
+> **주의**: `KMS_TOKEN`은 **앱 전용 토큰**이다. 사용자 세션 token과 혼동하지 않는다. 토큰 재발행은 KMS Apps 상세 화면에서만 수행한다. `kms.devworld.co.kr`는 Cloudflare Access 뒤에 있으므로 서비스 토큰(`CF_ACCESS_CLIENT_ID`/`CF_ACCESS_CLIENT_SECRET`)이 필요하다 — 로컬 macOS 키체인의 `MBP_KMS_KEY` 항목(JSON: `client_id`/`client_secret`)에서 `~/.kms/cf-access-env.sh`로 로드된다 (구 IP 직결 방식 대체). 프로젝트 `.envrc`는 보통 `KMS_TOKEN`만 제공하고 KMS용 CF 자격은 담지 않는다 — 셸에 자격이 없거나 다른 용도(git 호스트 등)의 CF 자격이 남아 있으면 KMS Access 앱이 302로 거부하므로, 위 스니펫처럼 항상 `unset` 후 재로드해야 한다. 302 리다이렉트(HTML 로그인 페이지)가 오면 이 체인을 타지 않은 것이다 — cloudflared 로그인 캐시는 필요 없다.
 
 ## 절대 원칙 (모든 서브커맨드 공통)
 
@@ -111,7 +117,7 @@ export <ENV_VAR_NAME>="$(curl -sf -X POST "${KMS_H[@]}" "$KMS_URL/api/v1/secrets
 전제 조건 두 가지가 **모두** 충족될 때만 진행한다:
 
 1. **사용자가 실제 값을 직접 제공**했다 (스킬이 값을 생성·추측하지 않는다).
-2. **사용자가 등록을 명시적으로 승인**했다.
+2. **셸에 `KMS_TOKEN`이 있다** — 앱 전용 토큰 보유 자체를 등록 승인으로 간주한다. `KMS_WRITE_APPROVAL_TOKEN` 같은 별도 승인 토큰이나 추가 확인 절차는 요구하지 않는다 (aiops-codex v0.4.4 `kms` 어댑터와 동일 규약 — 그쪽은 `KMS_WRITE_APPROVAL_TOKEN` → `KMS_TOKEN` 순으로 승인 토큰을 결정하며, 이 스킬은 승인 토큰 개념 없이 `KMS_TOKEN`만 본다).
 
 절차:
 

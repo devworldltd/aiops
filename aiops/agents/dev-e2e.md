@@ -16,6 +16,8 @@ model: sonnet
 - 현재(이슈 #116) 범위: 에이전트 정의만 등록 — devflow에서 자동 호출되지 않음.
 - 후속 이슈 #118 도입 후: devflow STEP 3(tech-spec) 직후, STEP 4(병렬 구현) 직전 **단독 STEP**.
 
+**platform=cli 판단**: `.claude/config.json` 의 `agent_hints.platform`(폴백 `.reviewer/profile.yaml` 의 `platform`)이 `cli` 면 Playwright 골격·`storageState`·`playwright.config.ts` 를 생성하지 **않는다.** 대신 `${CLAUDE_PLUGIN_ROOT}/templates/e2e-cli/` 골격(node:test 기반, 의존성 0)을 `$ROOT/tests/e2e-cli/` 에 생성한다(아래 "## platform=cli 골격 생성 분기" 절 참조). 기술 스펙의 `## E2E 검증 시나리오` 는 이와 별개로 `.e2e-agent` 러너 중립 시나리오로도 이미터하고, 브라우저 전제(URL 이동·DOM 셀렉터)를 CLI 전제(명령 실행·종료 코드·stdout 매칭)로 바꿔 쓴다.
+
 ## 입력 (이슈 댓글에서 읽는 항목)
 
 | 항목 | 1순위 (forge 이슈) | 2순위 (Fallback) |
@@ -30,9 +32,11 @@ model: sonnet
 2. 위 헤더 라벨로 grep, 없으면 fallback 파일 경로 시도
 3. `config.json`은 `jq` 우선, 미설치 시 grep 라인 파싱
 
-## Q5 보호 로직 (필수)
+## Q5 보호 로직 (필수, platform≠cli)
 
-기존 프로젝트의 `tests/e2e/` 자산은 **절대 덮어쓰지 않는다**. 다음 의사 코드를 그대로 따른다.
+`platform=cli` 인 경우는 본 절이 아니라 아래 "## platform=cli 골격 생성 분기" 절을 따른다.
+그 외(web/mobile/both/미설정)는 기존 프로젝트의 `tests/e2e/` 자산을 **절대 덮어쓰지 않는다**.
+다음 의사 코드를 그대로 따른다.
 
 ```bash
 TARGET_PLAYWRIGHT_CONFIG_1="$PROJECT_ROOT/playwright.config.ts"
@@ -94,7 +98,63 @@ fi
 - 재실행해도 이미 존재하는 키는 다시 추가하지 않아 중복·훼손이 없다.
 - `package-lock.json` 은 툴링 리포에 커밋하지 않고 대상 레포에서 `npm install` 로 생성한다(M4 규약).
 
-## 작성할 파일 목록 (총 19개 + 스택별 시드 1건 = 20개)
+## platform=cli 골격 생성 분기 (필수, 이슈 #41)
+
+`platform=cli` 프로젝트는 Playwright 골격 대신 `${CLAUDE_PLUGIN_ROOT}/templates/e2e-cli/`
+(node:test 내장 러너, 의존성 0, 20파일)를 `$ROOT/tests/e2e-cli/` 에 배치한다.
+Q5 보호는 CLI 전용 판별 키로 동일하게 적용한다 — 기존 CLI E2E 자산이 있으면 **절대
+덮어쓰지 않는다.**
+
+```bash
+PLATFORM=$(jq -r '.agent_hints.platform // ""' .claude/config.json 2>/dev/null)
+[[ -z "$PLATFORM" && -f .reviewer/profile.yaml ]] && PLATFORM=$(grep -E '^[[:space:]]*platform:' .reviewer/profile.yaml | head -1 | sed -E 's/.*platform:[[:space:]]*"?([A-Za-z]+)"?.*/\1/')
+
+if [[ "$PLATFORM" == "cli" ]]; then
+  # Q5 보호 (CLI 판별 키) — 하나라도 있으면 전량 스킵
+  if [[ -f "$PROJECT_ROOT/tests/e2e-cli/runner/run-e2e.mjs" || -d "$PROJECT_ROOT/tests/e2e-cli/full" ]]; then
+    write_devflow_hint_md "$PROJECT_ROOT/tests/e2e-cli/.devflow-hint.md"   # 덮어쓰기 0건
+    echo "기존 CLI E2E 자산 감지 — 골격 생성 스킵. 차이점은 .devflow-hint.md 참조"
+    exit 0
+  fi
+
+  # 신규 생성 — 20파일 전체를 tests/e2e-cli/ 아래로 복사 (web 과 달리 루트 분산 배치 없음)
+  copy ${CLAUDE_PLUGIN_ROOT}/templates/e2e-cli/* → $PROJECT_ROOT/tests/e2e-cli/
+
+  # package.json 병합 — Q5 보호와 동일한 "덮어쓰기 금지" 원칙 (§package.json 배치/병합 규약과 동형)
+  TARGET_PKG="$PROJECT_ROOT/package.json"
+  if [[ ! -f "$TARGET_PKG" ]]; then
+    copy ${CLAUDE_PLUGIN_ROOT}/templates/e2e-cli/package.json → "$TARGET_PKG"
+    # 루트 자체가 e2e-cli 골격이 되는 경우이므로 scripts 경로는 "runner/run-e2e.mjs" 그대로 둔다.
+  else
+    # scripts.e2e / scripts.e2e:smoke 가 없을 때만 추가. 있으면 절대 덮어쓰지 않는다.
+    # cwd 를 tests/e2e-cli/ 로 보정해야 full/·smoke/ 시나리오 디렉토리를 정상 해석한다.
+    #   "e2e"       : 없으면 "cd tests/e2e-cli && node runner/run-e2e.mjs --mode=full" 추가
+    #   "e2e:smoke" : 없으면 "cd tests/e2e-cli && node runner/run-e2e.mjs --mode=smoke" 추가
+    merge_cli_scripts "$TARGET_PKG"
+  fi
+
+  # .gitignore append (node_modules/·cli-e2e-results.tap·.env.test)
+  append ${CLAUDE_PLUGIN_ROOT}/templates/e2e-cli/_gitignore.append → $PROJECT_ROOT/.gitignore
+
+  # 의도적으로 만들지 않는 것 — Playwright 산출물 0개
+  # playwright.config.ts / global-setup.ts / *.spec.ts / .auth/ 생성 금지
+else
+  … 기존 Playwright 분기 (바이트 불변, 위 "## Q5 보호 로직" 절 참조) …
+fi
+```
+
+`.devflow-hint.md`(CLI 판) 필수 포함 항목:
+1. `tests/e2e-cli/` 디렉토리 구조 (`runner/`·`lib/`·`full/`·`smoke/`)
+2. `lib/run-cli.mjs`·`lib/assert-cli.mjs` 패턴과 러너 판정 불변식(§qa-e2e-cli.md §4) 요약
+3. `config.json` `e2e_full_paths`/`e2e_smoke_paths` 재해석 방식(CLI 테스트 디렉토리로 사용)
+4. 마이그레이션 권고 사항 (점진적으로 본 골격 구조로 이관 가능)
+5. **package.json 병합 안내** — 기존 package.json 이 있으면 위 병합 규약에 따라
+   `scripts.e2e`/`scripts.e2e:smoke` 만 병합(덮어쓰기 금지)
+
+## 작성할 파일 목록 (총 19개 + 스택별 시드 1건 = 20개, platform≠cli)
+
+> `platform=cli` 는 위 "## platform=cli 골격 생성 분기" 절의 20파일(`templates/e2e-cli/`)을
+> 그대로 사용하며, 아래 목록(Playwright 전제)은 적용하지 않는다.
 
 루트 (3):
 - `playwright.config.ts`
@@ -292,15 +352,17 @@ is_human_edited(path):
 - smoke 시나리오: 4건
 - 보호 로직 동작: skip | generated
 - .e2e-agent 렌더: N건 (기본 진입점 task.md=<route>-<ID>) | 보호 스킵 M건
+- platform=cli: node:test 기반 CLI 시나리오 골격(full 7 + smoke 4)으로 대체 생성 | 해당 없음(platform≠cli)
 
 ## 🧪 E2E 코드 작성 완료
-- 생성 파일 수: 19개 + 시드 1건 (package.json 포함, 또는 hint 1개)
-- package.json: 신규 배치 | 기존 병합 (devDeps/scripts) | lock 생성(npm install)
-- 로그인 치환(A3): tech-spec 인증 절 반영 (방식=api|form, 라우트=<경로>) | 미검출→FastAPI 기본 폴백(TODO 마커)
-- 테스트계정 시드(C11): <Django command | SQLAlchemy fixture | SQL> 생성, global-setup 계정과 1:1 매칭
+- 생성 파일 수: 19개 + 시드 1건 (package.json 포함, 또는 hint 1개) | platform=cli: 20개(package.json 포함, 또는 hint 1개)
+- package.json: 신규 배치 | 기존 병합 (devDeps/scripts, 또는 platform=cli 는 scripts.e2e/e2e:smoke 만) | lock 생성(npm install)
+- 로그인 치환(A3): tech-spec 인증 절 반영 (방식=api|form, 라우트=<경로>) | 미검출→FastAPI 기본 폴백(TODO 마커) | 해당 없음(platform=cli)
+- 테스트계정 시드(C11): <Django command | SQLAlchemy fixture | SQL> 생성, global-setup 계정과 1:1 매칭 | 해당 없음(platform=cli)
 - .e2e-agent 시나리오: N건 렌더 (기본 진입점 task.md=<route>-<ID>) | 보호 스킵 M건
-- 경로: <PROJECT_ROOT>/tests/e2e/ · <PROJECT_ROOT>/.e2e-agent/
-- 다음 단계: `aiops:qa-e2e` 호출 (E2E_ENV=local)
+- platform=cli 골격: 20파일 생성(`tests/e2e-cli/`) | 보호 스킵(.devflow-hint.md 1개만 작성) | 해당 없음(platform≠cli)
+- 경로: <PROJECT_ROOT>/tests/e2e/ · <PROJECT_ROOT>/.e2e-agent/ (platform=cli 는 <PROJECT_ROOT>/tests/e2e-cli/ · <PROJECT_ROOT>/.e2e-agent/)
+- 다음 단계: `aiops:qa-e2e` 호출 (E2E_ENV=local) | platform=cli: `aiops:qa-e2e-cli` 호출 (`/aiops:e2e-test --env=local`)
 ```
 
 저장 위치:

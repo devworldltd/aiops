@@ -198,7 +198,7 @@ fi
 
 ## 12. CI/CD Actions workflow_run 완료 대기 (GitHub/Gitea forge 자동 감지)
 
-`.claude/config.json` 의 `deploy_workflow` (구키 `github_actions_workflow` 폴백, 기본값 `deploy-cf.yml`) 와 `e2e_deploy_wait_sec` (기본값 120) 을 사용합니다. 머지 직후 Actions trigger 지연을 고려해 **grace 6회 × 5초 = 최대 30초** 동안 RUN_ID 를 폴링합니다.
+`.claude/config.json` 의 `deploy_workflow` (구키 `github_actions_workflow` 폴백, 기본값 `deploy-cf.yml`) 와 `e2e_deploy_wait_sec` (기본값 120) 을 사용합니다. 이 흐름은 dev 브랜치 전용 체인이며 prod 전용 배포 워크플로우 키는 참조하지 않습니다(prod 체인은 `/aiops:deploy-prod`·`/aiops:verify-deploy --env=prod` 참고). 머지 직후 Actions trigger 지연을 고려해 **grace 6회 × 5초 = 최대 30초** 동안 RUN_ID 를 폴링합니다.
 
 ```bash
 # §12.1 config 로드
@@ -267,8 +267,40 @@ CF_DEV_URL_RAW=$(jq -r '.e2e_dev_url // .dev_url // .cf_dev_url // ""' .claude/c
 CF_DEV_URL="${CF_DEV_URL_RAW//\$\{cf_dev_url\}/$CF_DEV_URL_BASE}"
 HC_PATH=$(jq -r '.e2e_healthcheck_path // "/health"' .claude/config.json)
 
+# §13.1b 스킵 판정 (#42)
+HC_URL_ASSEMBLED="$CF_DEV_URL"
+# >>> merge-pr:healthcheck-gate >>>
+# 선행 변수(앵커 밖): HC_URL_ASSEMBLED — 치환 완료된 헬스체크 base URL (빈 문자열 허용)
+# 산출 변수(앵커 밖에서 소비): HC_SKIP("true"|"false") · HC_SKIP_REASON · HC_PLATFORM
+# 판정: platform=cli AND URL 전부 빈 값 → SKIP. 그 외 전부 CHECK(종전 동작).
+HC_URL_ASSEMBLED="${HC_URL_ASSEMBLED:-}"
+HC_PLATFORM=$(jq -r '.agent_hints.platform // ""' .claude/config.json 2>/dev/null || echo "")
+if [[ -z "$HC_PLATFORM" && -f .reviewer/profile.yaml ]]; then
+  HC_PLATFORM=$(grep -E '^[[:space:]]*platform:[[:space:]]*' .reviewer/profile.yaml 2>/dev/null \
+    | head -1 | sed -E 's/^[[:space:]]*platform:[[:space:]]*"?([A-Za-z]+)"?.*$/\1/')
+fi
+HC_PLATFORM="${HC_PLATFORM:-}"
+HC_SKIP=false
+HC_SKIP_REASON=""
+if [[ -z "${HC_URL_ASSEMBLED//[[:space:]]/}" && "$HC_PLATFORM" == "cli" ]]; then
+  HC_SKIP=true
+  HC_SKIP_REASON="platform_cli"
+fi
+# <<< merge-pr:healthcheck-gate <<<
+
 # §13.2 baseURL 빈 값 → 환경 오류
-if [[ -z "$CF_DEV_URL" ]]; then
+if [[ "$HC_SKIP" == "true" ]]; then
+  bash "${CLAUDE_PLUGIN_ROOT}/scripts/forge.sh" issue-comment "$ISSUE" "## ℹ️ 헬스체크 스킵
+
+healthcheck_skipped=platform_cli
+
+- 환경: dev
+- 스킬: /aiops:merge-pr §13
+- 사유: platform=cli 이며 dev_url / cf_dev_url / e2e_dev_url 이 모두 비어 있음 — 헬스체크 대상 없음
+- 판정 근거: agent_hints.platform (.claude/config.json) → .reviewer/profile.yaml
+- 다음 액션: 없음 (정상 진행). 배포 대상이 생기면 \`.claude/config.json\` 의 해당 URL 키를 설정하면 자동으로 검사 모드로 전환됩니다"
+  echo "[merge-pr] §13 헬스체크 스킵 (사유=$HC_SKIP_REASON, platform=$HC_PLATFORM) — §14 로 진행"
+elif [[ -z "$CF_DEV_URL" ]]; then
   bash "${CLAUDE_PLUGIN_ROOT}/scripts/forge.sh" issue-comment "$ISSUE" "## ⚠️ Dev E2E 환경 오류
 
 E2E_ENV_ERROR=empty_dev_url
@@ -278,6 +310,9 @@ E2E_ENV_ERROR=empty_dev_url
   _send_telegram_notification "Dev E2E 환경 오류: empty_dev_url (issue=$ISSUE)" || true
   exit 2
 fi
+
+# §13.3~§13.5 는 스킵이 아닐 때만 실행 (#42)
+if [[ "$HC_SKIP" != "true" ]]; then
 
 # §13.3 기대 SHA = origin/dev 의 최신 SHA (40자 full + 7자 short)
 git fetch origin dev --quiet 2>/dev/null || true
@@ -321,6 +356,7 @@ if [[ "$HC_PASS" != "true" ]]; then
 fi
 
 echo "[merge-pr] §13 헬스체크 통과 (SHA=$EXPECTED_SHORT)"
+fi
 ```
 
 핵심 제약:
@@ -467,6 +503,7 @@ esac
 | **C. 환경 오류** | `## ⚠️ Dev E2E 환경 오류` | `E2E_ENV_ERROR=<reason>` | merge-pr §12/§13/§14 또는 qa-e2e | **차단** |
 | **D. 배포 검증 실패** | `## ⚠️ Dev 배포 검증 실패` | (사유 텍스트) | merge-pr §12/§13 | **차단** |
 | **E. 자동 실행 SKIP** (#131) | `## ℹ️ Dev E2E 자동 실행 스킵` | (사유 텍스트) | merge-pr §14.0 | **조건부** (`e2e_required_for_merge_main=true` 시 차단, 기본 false 시 허용) |
+| **F. 헬스체크 스킵** (#42) | `## ℹ️ 헬스체크 스킵` | `healthcheck_skipped=platform_cli` | merge-pr §13 / verify-deploy §2 / deploy-prod §4 | **허용** (E2E 게이트 면제 — `e2e_required_for_merge_main` 값 무관) |
 | (역호환) | (신규 댓글 없음) | — | — | 검사 대상 외 |
 
 ### 14.4 grep 회귀 테스트 (#120 입장)

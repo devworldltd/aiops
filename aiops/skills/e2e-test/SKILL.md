@@ -1,6 +1,6 @@
 ---
 name: e2e-test
-description: "Playwright E2E 테스트 실행 — `--env=<local|dev|prod> --mode=<full|smoke>` 매트릭스 지원. qa-e2e 에이전트 호출 + 표준 출력 마지막 줄 캡처(E2E_RESULT/E2E_ENV_ERROR)."
+description: "Playwright/CLI E2E 테스트 실행 — `--env=<local|dev|prod> --mode=<full|smoke>` 매트릭스 지원. platform=cli 는 qa-e2e-cli, 그 외는 qa-e2e 에이전트 호출 + 표준 출력 마지막 줄 캡처(E2E_RESULT/E2E_ENV_ERROR)."
 ---
 
 Playwright 기반 E2E 테스트를 실행합니다. **local/dev/prod 3환경 × full/smoke 2모드 = 6셀 매트릭스**를 지원하며,
@@ -55,6 +55,36 @@ case "$MODE" in full|smoke)    ;; *) echo "사용법: /aiops:e2e-test [--env=loc
 ```
 
 > 주: 본 스킬은 파싱·라우팅만 수행하고 더 엄격한 환경 검증(BLAST_RADIUS_GUARD, baseURL 빈 값, Playwright 설치 등 G3~G5)은 `aiops:qa-e2e` 에이전트가 수행합니다.
+
+---
+
+## 1.5. platform 라우팅 (신규 — #41)
+
+`agent_hints.platform`(폴백 `.reviewer/profile.yaml` 의 `stack.platform`)이 `cli` 인 프로젝트는 Playwright 가 아닌
+CLI 전용 에이전트 `aiops:qa-e2e-cli` 로 라우팅합니다. `cli` 가 아니거나 판정 불가(미설정 포함)면 **기존 §2 경로(`aiops:qa-e2e`)를 문구·인자·마커 그대로** 사용합니다.
+
+CLI 는 배포 대상이 없는 **local 단일 환경**이므로 `--env=dev|prod` 요청은 거부(exit 2)하지 않고 **local 로 강등**합니다.
+
+```bash
+# §1 인자 파싱과 §2 에이전트 호출 사이에서 평가
+# >>> e2e-test:platform-route >>>
+PLATFORM=$(jq -r '.agent_hints.platform // ""' .claude/config.json 2>/dev/null || echo "")
+[[ -z "$PLATFORM" && -f .reviewer/profile.yaml ]] && PLATFORM=$(grep -E '^[[:space:]]*platform:' .reviewer/profile.yaml | head -1 | sed -E 's/.*platform:[[:space:]]*"?([A-Za-z]+)"?.*/\1/')
+
+if [[ "$PLATFORM" == "cli" ]]; then
+  AGENT="aiops:qa-e2e-cli"
+  if [[ "$ENV" != "local" ]]; then
+    echo "[e2e-test] platform=cli — env=$ENV 는 배포 대상이 없어 local 로 강등합니다"
+    ENV="local"
+  fi
+else
+  AGENT="aiops:qa-e2e"      # 기존 경로 — 인자·프롬프트 무변경 (§2 그대로 진행)
+fi
+# <<< e2e-test:platform-route <<<
+```
+
+- `PLATFORM=cli` 인 경우: `aiops:qa-e2e-cli` 서브에이전트를 호출합니다. 매개변수(`--env=<ENV 강등 후>`, `--mode=<MODE>`, `--issue=<ARG_ISSUE>`, `--dry-run=<DRY_RUN>`)는 §2 와 동일한 형식으로 전달하되, 게이트·`<reason>` 목록은 `aiops:qa-e2e-cli` 에이전트 문서(신규 6종: `cli_entry_not_found` · `node_runtime_missing` · `cli_runner_not_available` · `cli_runner_runtime:exit_<n>` · `cli_scenario_dir_empty:<mode>` · `cli_runner_tap_parse_failed`)를 따릅니다. 결과 헤더·종료코드 매핑(§3)은 공통입니다.
+- `PLATFORM≠cli` (web/mobile/both/미설정 등): 아래 §2~§4 를 그대로 수행합니다.
 
 ---
 
@@ -125,6 +155,14 @@ esac
 - `empty_base_url:<env>`
 - `blast_radius_guard_required` (prod 실행 시 가드 미설정)
 - `playwright_not_installed`
+
+`platform=cli` 전용 `<reason>` 신규 6종 (§1.5 라우팅 시 `aiops:qa-e2e-cli` 가 반환, 위 5종과 이름 겹치지 않음. `invalid_env:<v>`/`invalid_mode:<v>` 는 G1/G2 에서 위 5종과 공유하는 기존 형식 그대로 사용):
+- `cli_entry_not_found`
+- `node_runtime_missing`
+- `cli_runner_not_available`
+- `cli_runner_runtime:exit_<n>`
+- `cli_scenario_dir_empty:<mode>`
+- `cli_runner_tap_parse_failed` (러너 TAP 파싱 실패 — `playwright_not_installed` 는 CLI 경로에 등장하지 않음)
 
 ---
 

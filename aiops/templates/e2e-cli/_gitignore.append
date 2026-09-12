@@ -1,0 +1,6 @@
+# CLI E2E (claude-ai-devops, 이슈 #41)
+# install.sh 가 대상 프로젝트 .gitignore 끝에 append 한다.
+node_modules/
+cli-e2e-results.tap
+# CLI E2E 환경변수 — 시크릿 보호. .env.test.example만 커밋한다.
+.env.test

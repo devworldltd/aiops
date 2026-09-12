@@ -22,6 +22,7 @@ description: "Prod 배포 검증 — main 머지 후 호출. CI/CD Actions(GitHu
 - C 시나리오 — `## 🚨 Prod 롤백 후 FAIL — 운영자 즉시 확인` + `PROD_RESULT=ROLLBACK_FAIL`
 - D 시나리오 — `## ⚠️ Prod E2E 환경 오류` + `E2E_ENV_ERROR=<reason>`
 - E 시나리오 — `## ⚠️ Prod 배포 검증 실패`
+- F 시나리오 (#42) — `## ℹ️ 헬스체크 스킵` + `healthcheck_skipped=platform_cli` (platform=cli 이며 prod URL 이 전부 비어 있을 때, 3~6 단계를 건너뛰고 정상 종료)
 
 > EM DASH `—` 은 U+2014 (UTF-8 `0xE2 0x80 0x94`). EN DASH (U+2013) / HYPHEN (U+002D) 와 절대 혼동 금지.
 
@@ -148,9 +149,25 @@ echo "[deploy-prod] §2 main_sha=$MAIN_SHA (source=$MAIN_SHA_SOURCE) issue=#${IS
 `--branch main` + `--sha $MAIN_SHA` 로 호출한다.
 
 ```bash
-WORKFLOW=$(jq -r '.deploy_workflow // .github_actions_workflow // "deploy-cf.yml"' .claude/config.json)
-DEPLOY_WAIT=$(jq -r '.e2e_deploy_wait_sec // 120' .claude/config.json)
+# >>> workflow-resolve:prod >>>
+# prod 키 체인 — deploy_workflow_prod 가 1순위. null·""·부재는 모두 미설정으로 취급(AC-7/AC-8).
+WORKFLOW_KEYS="deploy_workflow_prod deploy_workflow github_actions_workflow"
+WORKFLOW_KEY_HINT="\`deploy_workflow_prod\`(권장) 또는 \`deploy_workflow\`"
+WORKFLOW=""; WORKFLOW_SOURCE="default"
+for _k in $WORKFLOW_KEYS; do
+  _v=$(jq -r --arg k "$_k" '.[$k] // empty' .claude/config.json 2>/dev/null || echo "")
+  if [[ -n "$_v" ]]; then WORKFLOW="$_v"; WORKFLOW_SOURCE="$_k"; break; fi
+done
+[[ -z "$WORKFLOW" ]] && WORKFLOW="deploy-cf.yml"
+# <<< workflow-resolve:prod <<<
 
+DEPLOY_WAIT=$(jq -r '.e2e_deploy_wait_sec // 120' .claude/config.json)
+echo "[deploy-prod] §3 workflow=$WORKFLOW (source=$WORKFLOW_SOURCE) branch=main sha=$MAIN_SHA"
+```
+
+> 위 블록을 감싼 `workflow-resolve:prod` 앵커 주석은 **테스트가 코드를 추출하는 지점**이다. 앵커 문자열 자체를 임의로 바꾸지 말 것.
+
+```bash
 # §3.1~3.3 run 대기 — forge 자동 감지 헬퍼 (GitHub=gh CLI / Gitea=REST API)
 #   main 에는 여러 run 이 누적되므로 --sha 매칭 필수.
 #   출력 계약: 마지막 stdout 줄 "RUN_ID=<id> RUN_URL=<url> CONCLUSION=<...>"
@@ -169,7 +186,7 @@ fi
 # §3.2 run 미발견 → 시나리오 E
 if [[ $WORKFLOW_EXIT -eq 2 ]]; then
   _post_marker_E "actions_run_not_found" \
-    "workflow=$WORKFLOW, branch=main, head_sha=$MAIN_SHA 의 run 을 30초 내 미발견"
+    "workflow=$WORKFLOW (적용 키: $WORKFLOW_SOURCE), branch=main, head_sha=$MAIN_SHA 의 run 을 30초 내 미발견. 확인: .claude/config.json 의 $WORKFLOW_KEY_HINT, 그리고 .gitea/workflows/$WORKFLOW · .github/workflows/$WORKFLOW 존재 여부"
   exit 1
 fi
 
@@ -203,6 +220,32 @@ CF_PROD_URL_BASE=$(jq -r '.prod_url // .cf_prod_url // ""' .claude/config.json)
 CF_PROD_URL_RAW=$(jq -r '.e2e_prod_url // .prod_url // .cf_prod_url // ""' .claude/config.json)
 CF_PROD_URL="${CF_PROD_URL_RAW//\$\{cf_prod_url\}/$CF_PROD_URL_BASE}"
 HC_PATH=$(jq -r '.e2e_healthcheck_path // "/health"' .claude/config.json)
+
+HC_URL_ASSEMBLED="$CF_PROD_URL"
+# >>> deploy-prod:healthcheck-gate >>>
+# 선행 변수(앵커 밖): HC_URL_ASSEMBLED — 치환 완료된 헬스체크 base URL (빈 문자열 허용)
+# 산출 변수(앵커 밖에서 소비): HC_SKIP("true"|"false") · HC_SKIP_REASON · HC_PLATFORM
+# 판정: platform=cli AND URL 전부 빈 값 → SKIP. 그 외 전부 CHECK(종전 동작).
+HC_URL_ASSEMBLED="${HC_URL_ASSEMBLED:-}"
+HC_PLATFORM=$(jq -r '.agent_hints.platform // ""' .claude/config.json 2>/dev/null || echo "")
+if [[ -z "$HC_PLATFORM" && -f .reviewer/profile.yaml ]]; then
+  HC_PLATFORM=$(grep -E '^[[:space:]]*platform:[[:space:]]*' .reviewer/profile.yaml 2>/dev/null \
+    | head -1 | sed -E 's/^[[:space:]]*platform:[[:space:]]*"?([A-Za-z]+)"?.*$/\1/')
+fi
+HC_PLATFORM="${HC_PLATFORM:-}"
+HC_SKIP=false
+HC_SKIP_REASON=""
+if [[ -z "${HC_URL_ASSEMBLED//[[:space:]]/}" && "$HC_PLATFORM" == "cli" ]]; then
+  HC_SKIP=true
+  HC_SKIP_REASON="platform_cli"
+fi
+# <<< deploy-prod:healthcheck-gate <<<
+
+if [[ "$HC_SKIP" == "true" ]]; then
+  _post_marker_HC_SKIP "prod"
+  echo "[deploy-prod] §4 헬스체크 스킵 (사유=$HC_SKIP_REASON) — smoke E2E·Q4-B 자동 롤백 대상 제외"
+  exit 0
+fi
 
 if [[ -z "$CF_PROD_URL" ]]; then
   _post_marker_E "empty_prod_url" "cf_prod_url / e2e_prod_url 모두 비어있음"
@@ -634,6 +677,22 @@ _post_marker_ROLLBACK_UNAVAILABLE() {
 - 다음 액션: 수동 hotfix PR + wrangler deployments list 점검
 - failed_at: $(_now)"
 }
+
+# 보조: 헬스체크 스킵 — 배포 대상 없음 (#42)
+_post_marker_HC_SKIP() {
+  local ENV="$1"
+  _post "## ℹ️ 헬스체크 스킵
+
+healthcheck_skipped=platform_cli
+
+- 환경: $ENV
+- 스킬: /aiops:deploy-prod §4
+- 사유: platform=cli 이며 prod_url / cf_prod_url / e2e_prod_url 이 모두 비어 있음 — 헬스체크 대상 없음
+- smoke E2E: 스킵 (prod URL 없음)
+- Q4-B 자동 롤백: 대상 제외 — 배포 산출물이 없어 롤백할 deployment 가 존재하지 않음 (wrangler deployments 조회 자체를 수행하지 않음)
+- main_sha=${MAIN_SHA:-N/A}
+- 다음 액션: 없음 (정상 종료, exit 0)"
+}
 ```
 
 ### 9.2 마커 매트릭스 표 (불변 — #122 문서 색인 입력)
@@ -646,6 +705,7 @@ _post_marker_ROLLBACK_UNAVAILABLE() {
 | **D. 환경 오류** | `## ⚠️ Prod E2E 환경 오류` | — | `E2E_ENV_ERROR=<reason>` | skip | 2 |
 | **E. 배포 검증 실패** | `## ⚠️ Prod 배포 검증 실패` | — | `reason`, `main_sha` | skip | 1 |
 | (S1) FAIL_NO_ROLLBACK | `## ❌ Prod smoke FAIL (--skip-rollback)` | `FAIL_NO_ROLLBACK` | `main_sha` | 강제 | 1 |
+| **F. 헬스체크 스킵** (#42) | `## ℹ️ 헬스체크 스킵` | — | `healthcheck_skipped=platform_cli` | skip | 0 |
 
 > 본 매트릭스는 PRD §5 인터페이스 계약과 1:1 동일. 헤더 / 키 명칭 변경 시 #122 문서와 동시 업데이트 의무.
 

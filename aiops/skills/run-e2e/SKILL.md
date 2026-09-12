@@ -95,6 +95,8 @@ FINAL_MODE="${ARG_MODE:-$DETECTED_MODE_DEFAULT}"
 
 > 본 감지 로직은 본 저장소의 브랜치 전략 (`feature/issue-N` → `dev` → `main`) 을 전제로 합니다. 다른 브랜치 모델을 사용하는 프로젝트에서는 `--env=` 명시 호출을 권장합니다.
 
+> **`platform=cli` 프로젝트 안내 (#41)**: 대상 프로젝트가 `agent_hints.platform=cli` (CLI 전용, 배포 대상 없음) 인 경우, 위 감지 결과가 `dev`/`prod` 여도 위임 대상인 `/aiops:e2e-test` 가 **local 로 자동 강등**하고 `aiops:qa-e2e-cli` 로 라우팅합니다 (§4 위임 시 그대로 전달, 강등은 `/aiops:e2e-test` §1.5 에서 수행). 본 스킬 자체의 브랜치 감지 로직은 변경되지 않습니다.
+
 ---
 
 ## 3. prod 안전 검사 (BLAST_RADIUS_GUARD)

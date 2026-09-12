@@ -61,14 +61,20 @@ echo "[devflow] 감지된 플랫폼: $PLATFORM"
 | platform | 동작 |
 |----------|------|
 | `web` (기본) | 기존 STEP 1~10 진행 (변경 없음, 역호환) |
+| `cli` | 기존 STEP 1~10 진행 (web 과 동일, 경고 없음) — #16 |
 | `mobile` | 즉시 `/aiops:mobileflow #N`에 위임 + 종료 (STEP 1~10 진행하지 않음) |
 | `both` | 기존 STEP 1~10 (웹) 진행 후 `/aiops:mobileflow #N` 추가 호출 (순차) |
 
 ```bash
+# >>> devflow:platform-branch >>>
 case "$PLATFORM" in
   web)
     echo "[devflow] 웹 흐름 진행"
     # STEP 1 이하 정상 진행
+    ;;
+  cli)
+    echo "[devflow] CLI 흐름 진행 (web 동일)"
+    # web 과 동일하게 STEP 1 이하 정상 진행. mobileflow 위임 없음.
     ;;
   mobile)
     echo "[devflow] 모바일 전용 — /aiops:mobileflow 위임"
@@ -85,6 +91,7 @@ case "$PLATFORM" in
     echo "[devflow] WARN: unknown platform=$PLATFORM — web 폴백"
     ;;
 esac
+# <<< devflow:platform-branch <<<
 ```
 
 ### §M.3 platform=both 사용자 흐름

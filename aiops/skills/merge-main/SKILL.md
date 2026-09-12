@@ -6,7 +6,7 @@ description: "dev → main 자동 머지 — 가장 최근 머지된 이슈의 #
 dev 브랜치를 main 으로 자동 머지합니다.
 
 > **이 스킬은 dev → main 승격 + 자동 머지를 한 번에 수행합니다.**
-> 가장 최근 dev 머지 이슈의 #119 마커 매트릭스(`## 🌐 Dev E2E 결과 — full` + `E2E_RESULT=PASS`) 가 모두 만족되어야 진행합니다. 차단 마커가 1건이라도 있으면 머지하지 않습니다.
+> 가장 최근 dev 머지 이슈의 #119 마커 매트릭스(`## 🌐 Dev E2E 결과 — full` + `E2E_RESULT=PASS`) 가 모두 만족되어야 진행합니다. 차단 마커가 1건이라도 있으면 머지하지 않습니다. 단, `## ℹ️ 헬스체크 스킵`(platform=cli, #42) 마커가 있으면 배포 대상이 없다는 뜻이므로 이 E2E 게이트를 면제하고 진행합니다.
 
 > **issue-N → dev 머지는 `/aiops:merge-pr` 를 사용하세요.** 본 스킬은 dev → main 만 다룹니다.
 
@@ -192,6 +192,10 @@ HAS_E2E_RESULT_FAIL=$(echo "$ISSUE_COMMENTS"| grep -c 'E2E_RESULT=FAIL'         
 HAS_ENV_ERR=$(echo "$ISSUE_COMMENTS"       | grep -cE '^## ⚠️ Dev E2E 환경 오류$'    || true)
 HAS_DEPLOY_ERR=$(echo "$ISSUE_COMMENTS"    | grep -cE '^## ⚠️ Dev 배포 검증 실패$'   || true)
 
+# §4.2b 헬스체크 스킵 마커 (#42) — 차단 목록 아님. 앵커 고정 정규식.
+HAS_HC_SKIP=$(echo "$ISSUE_COMMENTS"       | grep -cE '^## ℹ️ 헬스체크 스킵$'        || true)
+[[ "$HAS_HC_SKIP" -gt 0 ]] && echo "[merge-main] §4.2 ℹ️ 헬스체크 스킵 마커 감지 (#42) — 배포 대상 없음, 차단 사유 아님"
+
 # §4.3 허용 마커 검사 (A — AND 조건)
 HAS_FULL_HEADER=$(echo "$ISSUE_COMMENTS"   | grep -cE '^## 🌐 Dev E2E 결과 — full$'  || true)
 HAS_E2E_RESULT_PASS=$(echo "$ISSUE_COMMENTS"| grep -c 'E2E_RESULT=PASS'              || true)
@@ -210,6 +214,10 @@ elif [[ "$HAS_FULL_HEADER" -gt 0 && "$HAS_E2E_RESULT_PASS" -gt 0 ]]; then
   echo "[merge-main] §4 시나리오 A — PASS 마커 확인 (이슈=#$RECENT_ISSUE)"
   MARKER_QUOTE="## 🌐 Dev E2E 결과 — full + E2E_RESULT=PASS"
   SKIP_REASON=""
+elif [[ "$HAS_HC_SKIP" -gt 0 ]]; then
+  echo "[merge-main] §4 ℹ️ 헬스체크 스킵 마커 — E2E 게이트 면제하고 진행 (e2e_required_for_merge_main=$E2E_REQUIRED)"
+  MARKER_QUOTE="(healthcheck_skipped=platform_cli, e2e_gate_exempt)"
+  SKIP_REASON="healthcheck_skipped"
 else
   # 시나리오 C' (마커 부재)
   if [[ "$SKIP_E2E_CHECK" == "true" ]]; then
@@ -561,6 +569,7 @@ EOF
 | **C. 환경 오류** | `## ⚠️ Dev E2E 환경 오류` | `E2E_ENV_ERROR=<reason>` | merge-pr §12/§13/§14 또는 qa-e2e | **차단** (`e2e_env_error`) |
 | **D. 배포 검증 실패** | `## ⚠️ Dev 배포 검증 실패` | (사유 텍스트) | merge-pr §12/§13 | **차단** (`deploy_verify_failed`) |
 | **E. 자동 실행 SKIP** (#131) | `## ℹ️ Dev E2E 자동 실행 스킵` | (사유 텍스트) | merge-pr §14.0 | `e2e_required_for_merge_main=true` 시 `marker_absent` 차단 / 기본 false 시 경고 후 진행 |
+| **F. 헬스체크 스킵** (#42) | `## ℹ️ 헬스체크 스킵` | `healthcheck_skipped=platform_cli` | merge-pr §13 / verify-deploy §2 / deploy-prod §4 | E2E 게이트 면제하고 진행 (차단 아님) |
 | (역호환) | (신규 댓글 없음) | — | — | `e2e_required_for_merge_main=true` 시 `marker_absent` / 기본 false 시 경고 후 진행 (#131) |
 
 EM DASH `—` = U+2014 (3바이트 UTF-8: `0xE2 0x80 0x94`). EN DASH `–` (U+2013) / HYPHEN `-` (U+002D) 와 절대 혼동 금지.

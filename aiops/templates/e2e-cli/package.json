@@ -1,0 +1,12 @@
+{
+  "name": "e2e-cli-tests",
+  "version": "0.0.0",
+  "private": true,
+  "description": "CLI E2E 테스트 (claude-ai-devops platform=cli 골격). dev-e2e 에이전트가 대상 레포에 배치/병합한다. 브라우저 E2E 프레임워크 미사용 — node:test 내장 러너, 의존성 0.",
+  "scripts": {
+    "e2e": "node runner/run-e2e.mjs --mode=full",
+    "e2e:smoke": "node runner/run-e2e.mjs --mode=smoke",
+    "test": "npm run e2e"
+  },
+  "devDependencies": {}
+}

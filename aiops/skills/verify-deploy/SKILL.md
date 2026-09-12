@@ -91,6 +91,8 @@ if [[ "$ENV" == "dev" ]]; then
   HEADER_HC="## 🩺 dev 헬스체크"
   HEADER_ACTIONS="## 🔁 dev 배포 대기 결과"
   HEADER_E2E="## 🌐 Dev E2E 결과 — $MODE"
+  WORKFLOW_KEYS="deploy_workflow github_actions_workflow"        # ← 종전 체인 그대로(M-3/M-2 dev 불변)
+  WORKFLOW_KEY_HINT="\`deploy_workflow\`"
 else
   TARGET_BRANCH="main"
   URL_BASE_KEY="cf_prod_url"
@@ -99,17 +101,72 @@ else
   HEADER_HC="## 🩺 prod 헬스체크"
   HEADER_ACTIONS="## 🚦 prod Actions 결과"
   HEADER_E2E="## 🌐 prod smoke E2E 결과"
+  WORKFLOW_KEYS="deploy_workflow_prod deploy_workflow github_actions_workflow"   # ← ★신규 1단
+  WORKFLOW_KEY_HINT="\`deploy_workflow_prod\`(권장) 또는 \`deploy_workflow\`"
 fi
 
 # §2.3 config 로드
-WORKFLOW=$(jq -r '.deploy_workflow // .github_actions_workflow // "deploy-cf.yml"' .claude/config.json)
+# >>> workflow-resolve:env >>>
+# §2.2 가 세팅한 WORKFLOW_KEYS 를 순회. env 재분기 금지(D-3).
+WORKFLOW=""; WORKFLOW_SOURCE="default"
+for _k in $WORKFLOW_KEYS; do
+  _v=$(jq -r --arg k "$_k" '.[$k] // empty' .claude/config.json 2>/dev/null || echo "")
+  if [[ -n "$_v" ]]; then WORKFLOW="$_v"; WORKFLOW_SOURCE="$_k"; break; fi
+done
+[[ -z "$WORKFLOW" ]] && WORKFLOW="deploy-cf.yml"
+# <<< workflow-resolve:env <<<
+
 DEPLOY_WAIT=$(jq -r '.e2e_deploy_wait_sec // 120' .claude/config.json)
 HC_PATH=$(jq -r '.e2e_healthcheck_path // "/health"' .claude/config.json)
 URL_BASE=$(jq -r ".$URL_BASE_KEY // \"\"" .claude/config.json)
 URL_RAW=$(jq -r ".$URL_RAW_KEY // .$URL_BASE_KEY // \"\"" .claude/config.json)
 TARGET_URL="${URL_RAW//\$\{$URL_BASE_KEY\}/$URL_BASE}"
 
-if [[ -z "$TARGET_URL" ]]; then
+# §2.3b 스킵 판정 (#42)
+HC_URL_ASSEMBLED="$TARGET_URL"
+# >>> verify-deploy:healthcheck-gate >>>
+# 선행 변수(앵커 밖): HC_URL_ASSEMBLED — 치환 완료된 헬스체크 base URL (빈 문자열 허용)
+# 산출 변수(앵커 밖에서 소비): HC_SKIP("true"|"false") · HC_SKIP_REASON · HC_PLATFORM
+# 판정: platform=cli AND URL 전부 빈 값 → SKIP. 그 외 전부 CHECK(종전 동작).
+HC_URL_ASSEMBLED="${HC_URL_ASSEMBLED:-}"
+HC_PLATFORM=$(jq -r '.agent_hints.platform // ""' .claude/config.json 2>/dev/null || echo "")
+if [[ -z "$HC_PLATFORM" && -f .reviewer/profile.yaml ]]; then
+  HC_PLATFORM=$(grep -E '^[[:space:]]*platform:[[:space:]]*' .reviewer/profile.yaml 2>/dev/null \
+    | head -1 | sed -E 's/^[[:space:]]*platform:[[:space:]]*"?([A-Za-z]+)"?.*$/\1/')
+fi
+HC_PLATFORM="${HC_PLATFORM:-}"
+HC_SKIP=false
+HC_SKIP_REASON=""
+if [[ -z "${HC_URL_ASSEMBLED//[[:space:]]/}" && "$HC_PLATFORM" == "cli" ]]; then
+  HC_SKIP=true
+  HC_SKIP_REASON="platform_cli"
+fi
+# <<< verify-deploy:healthcheck-gate <<<
+
+if [[ "$HC_SKIP" == "true" ]]; then
+  if [[ "$ENV" == "dev" ]]; then
+    HC_URL_KEY_HINT="dev_url / cf_dev_url / e2e_dev_url"
+  else
+    HC_URL_KEY_HINT="prod_url / cf_prod_url / e2e_prod_url"
+  fi
+  if [[ -n "$ISSUE" ]]; then
+    bash "${CLAUDE_PLUGIN_ROOT}/scripts/forge.sh" issue-comment "$ISSUE" "## ℹ️ 헬스체크 스킵
+
+healthcheck_skipped=platform_cli
+
+- 환경: $ENV
+- 스킬: /aiops:verify-deploy §2
+- 사유: platform=cli 이며 $HC_URL_KEY_HINT 이 모두 비어 있음 — 헬스체크 대상 없음
+- 판정 근거: agent_hints.platform (.claude/config.json) → .reviewer/profile.yaml
+- 건너뛴 단계: Actions 대기(§3) · 헬스체크(§4) · E2E(§5)
+- Actions 대기: 스킵 — 배포 대상이 없어 workflow_run 검증을 수행하지 않음 (배포 워크플로가 설정된 CLI 레포라도 이 검증은 생략됩니다)
+- 헬스체크: 스킵 — $HC_URL_KEY_HINT 이 모두 비어 있어 조회할 엔드포인트 없음
+- E2E: 스킵 — 대상 URL 없음 (--skip-e2e 여부와 무관하며 §6 결과 마커는 등록되지 않습니다)
+- 다음 액션: 없음 (정상 종료, exit 0). 배포 대상이 생기면 \`.claude/config.json\` 의 해당 URL 키를 설정하면 자동으로 검사 모드로 전환됩니다"
+  fi
+  echo "[verify-deploy] §2 헬스체크 스킵 (env=$ENV, 사유=$HC_SKIP_REASON) — §3 Actions 대기·§4 헬스체크·§5 E2E 모두 건너뛰고 정상 종료"
+  exit 0
+elif [[ -z "$TARGET_URL" ]]; then
   echo "[verify-deploy] §2 ERROR: $URL_RAW_KEY / $URL_BASE_KEY 모두 비어있어 헬스체크 URL 조립 불가"
   [[ -n "$ISSUE" ]] && bash "${CLAUDE_PLUGIN_ROOT}/scripts/forge.sh" issue-comment "$ISSUE" "## ⚠️ ${ENV^} 배포 검증 환경 오류
 
@@ -119,7 +176,7 @@ E2E_ENV_ERROR=empty_target_url
   exit 2
 fi
 
-echo "[verify-deploy] §2 검증 대상: $TARGET_URL (브랜치=$TARGET_BRANCH, workflow=$WORKFLOW)"
+echo "[verify-deploy] §2 검증 대상: $TARGET_URL (브랜치=$TARGET_BRANCH, workflow=$WORKFLOW, source=$WORKFLOW_SOURCE)"
 ```
 
 ---
@@ -145,7 +202,8 @@ if [[ $WORKFLOW_EXIT -eq 2 ]]; then
 E2E_ENV_ERROR=workflow_run_not_found:$WORKFLOW@$TARGET_BRANCH
 
 - 워크플로우 \`$WORKFLOW\` 의 head_branch=$TARGET_BRANCH run 을 30초 내 찾지 못함
-- 다음 액션: \`.claude/config.json\` 의 \`deploy_workflow\` 또는 \`.gitea/workflows/$WORKFLOW\`(Gitea) · \`.github/workflows/$WORKFLOW\`(GitHub) 확인"
+- 적용된 키: \`$WORKFLOW_SOURCE\`
+- 다음 액션: \`.claude/config.json\` 의 $WORKFLOW_KEY_HINT 또는 \`.gitea/workflows/$WORKFLOW\`(Gitea) · \`.github/workflows/$WORKFLOW\`(GitHub) 확인"
   exit 2
 fi
 
@@ -226,6 +284,8 @@ echo "[verify-deploy] §4 헬스체크 통과 (SHA=$EXPECTED_SHORT)"
 ## 5. E2E 실행 (`--skip-e2e` 아닐 때)
 
 `--skip-e2e` 인자가 있으면 본 절을 건너뛰고 §6 으로 진행합니다.
+
+> **`platform=cli` 안내 (#41)**: `platform=cli` 프로젝트의 E2E 는 배포 대상이 없어 본 스킬(배포 검증 통합)에서 수행하지 않는다. devflow STEP 8 또는 `/aiops:e2e-test --env=local`(→ `aiops:qa-e2e-cli` 라우팅)에서 수행한다. 아래 §2 헬스체크 스킵(`platform_cli`)과 정합되는 동작이며, 본 절의 호출 방식·코드는 변경되지 않는다.
 
 ```bash
 if [[ "$SKIP_E2E" == "true" ]]; then
@@ -382,6 +442,10 @@ sequenceDiagram
 
     U->>VD: /aiops:verify-deploy --env=dev|prod [--mode=] [--skip-e2e] [--issue=N]
     VD->>VD: §1 인자 파싱 + §2 사전 검증
+    alt §2 헬스체크 스킵 (platform=cli, URL 전부 공백)
+        VD->>I: ## ℹ️ 헬스체크 스킵 (§3·§4·§5 모두 건너뜀)
+        VD-->>U: exit 0
+    end
     VD->>GH: §3 actions-wait.sh --branch=$TARGET_BRANCH (forge 자동 감지, grace 6×5s)
     GH-->>VD: RUN_ID
     VD->>GH: §3 actions-wait.sh 완료 폴링 (timeout=DEPLOY_WAIT)

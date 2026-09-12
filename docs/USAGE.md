@@ -62,6 +62,7 @@
 | `## 🌐 Dev E2E 결과 — full` | merge-pr | merge-main |
 | `## 🚀 main 머지 완료` · `## 🚀 Prod 배포 검증` | merge-main, deploy-prod | — |
 | `## ⚠️ Prod 자동 롤백 완료` · `## ⚠️ … 환경 오류` | deploy-prod, e2e-* | 사람 |
+| `## ℹ️ 헬스체크 스킵` (본문 `healthcheck_skipped=platform_cli`) | merge-pr §13, verify-deploy §2, deploy-prod §4 | merge-main(E2E 게이트 면제), 사람 |
 
 ### P4. 게이트 — 통과 조건이 수치다
 
@@ -99,11 +100,11 @@ PRD·기술 스펙·리뷰·커밋 메시지 전부 한국어다.
 
 ---
 
-## 3. 스킬 33개 — 무엇을 부르면 무엇이 남나
+## 3. 스킬 34개 — 무엇을 부르면 무엇이 남나
 
 호출은 `/aiops:<이름>`. **3개(`backend`·`frontend`·`wireframe`)는 frontmatter 에
 `disable-model-invocation: true`** 가 있어 모델이 자동 선택하지 않고 사람이 슬래시로만 부른다
-(아래 ✋ 표시). 나머지 30개는 모델이 상황에 맞게 스스로 고를 수 있다.
+(아래 ✋ 표시). 나머지 31개는 모델이 상황에 맞게 스스로 고를 수 있다.
 
 > 확인법: `grep -l '^disable-model-invocation' aiops/skills/*/SKILL.md` — **frontmatter(파일 앞
 > `---` 구간) 안에 있을 때만 효력이 있다.** 본문에 있으면 아무 일도 하지 않으며, 산출물 템플릿
@@ -152,6 +153,8 @@ PRD·기술 스펙·리뷰·커밋 메시지 전부 한국어다.
 출력 계약: 마지막 줄이 `E2E_RESULT=PASS|FAIL` 또는 `E2E_ENV_ERROR=<사유>`.
 종료 코드 `0`/`1`/`2`(환경 오류).
 
+`agent_hints.platform=cli` (또는 `.reviewer/profile.yaml` 폴백) 인 프로젝트는 `e2e-test` 가 Playwright 대신 `qa-e2e-cli` 로 라우팅한다(#41). CLI 는 배포 대상이 없는 **local 단일 환경**이라 `--env=dev|prod` 요청은 거부되지 않고 local 로 강등된다. `qa-e2e.md` 자체는 바이트 불변이며, CLI 전용 게이트·`<reason>` 은 `qa-e2e-cli` 문서를 따른다.
+
 ### 3-5. 머지·배포
 
 | 스킬 | 하는 일 |
@@ -175,7 +178,7 @@ PRD·기술 스펙·리뷰·커밋 메시지 전부 한국어다.
 
 ---
 
-## 4. 에이전트 25개 — 누가 무엇을 판단하나
+## 4. 에이전트 26개 — 누가 무엇을 판단하나
 
 스킬이 절차라면 에이전트는 **역할**이다. 직접 부르기보다 스킬이 위임한다.
 
@@ -186,7 +189,7 @@ PRD·기술 스펙·리뷰·커밋 메시지 전부 한국어다.
 | 설계 | `dev` | 기술 스펙 총괄 |
 | 구현 | `dev-backend` · `dev-frontend` · `dev-designer` · `dev-devops` · `dev-e2e` · `dev-pr` | 스택 적응 구현 · 배포 · E2E 골격 · PR |
 | 모바일 | `dev-mobile-android` · `dev-mobile-ios` · `dev-mobile-rn` · `dev-mobile-flutter` | 프레임워크별 구현 |
-| QA | `qa-backend` · `qa-frontend` · `qa-admin` · `qa-e2e` | 재실측 + Sign-off 판정 |
+| QA | `qa-backend` · `qa-frontend` · `qa-admin` · `qa-e2e` · `qa-e2e-cli` | 재실측 + Sign-off 판정 (CLI 플랫폼은 `qa-e2e-cli`) |
 | 모바일 QA | `qa-mobile-android` · `qa-mobile-ios` · `qa-mobile-e2e` | 단위·E2E |
 | 버그 | `bug-analyst` · `bug-verifier` | 재현·원인 / 수정 전후 증거 검증 |
 | 릴리스 | `release-manager` · `doc-updater` | 머지·정리 / 문서 자동 갱신 |
@@ -261,9 +264,11 @@ tools/release.sh --sync-latest v1.3.2
 | `agent_hints` | `platform` · `backend{language,framework,orm,test_runner}` · `frontend{…}` · `mobile{framework}` · `structure` · `ci` · `db` · `build_system` |
 | `tech_stack` | 감지된 스택 목록(에이전트 폴백) |
 | `use_docker` · `docker.*` | QA·배포 스킬의 Docker 경로 |
-| `dev_url` · `prod_url` (옛 이름 `cf_dev_url`·`cf_prod_url` 호환) | 환경별 기준 URL — **배포 대상 무관**. 헬스체크는 `<url><e2e_healthcheck_path>` 의 `deployed_sha` 를 본다 |
+| `dev_url` · `prod_url` (옛 이름 `cf_dev_url`·`cf_prod_url` 호환) | 환경별 기준 URL — **배포 대상 무관**. 헬스체크는 `<url><e2e_healthcheck_path>` 의 `deployed_sha` 를 본다. `agent_hints.platform=cli` 이고 두 키가 모두 비면 헬스체크는 자동 스킵(#42) |
 | `use_cloudflare_workers` | CF 전용 단계 on/off. **미지정 시 `agent_hints.*.deploy_target` 에서 파생**하고, 그것도 없으면 `false`(하지 않는 쪽이 안전) |
-| `deploy_workflow` · `project_root` | Actions 파일명 · 작업 루트 |
+| `deploy_workflow` · `project_root` | Actions 파일명(분리 레포에서는 **dev 전용** 의미) · 작업 루트 |
+| `deploy_workflow_prod` | prod(main) 배포 Actions 파일명. 미설정 시 `deploy_workflow` 로 폴백 — dev/prod 워크플로우가 분리된 레포에서만 필요 |
+| `github_actions_workflow` | (레거시 구키) 위 두 키가 모두 없을 때의 폴백 |
 | `auto_merge_to_dev` | review-pr APPROVE 시 자동 dev 머지 |
 | `release_command` | merge-main §7.0 이 승격 직전에 돌릴 릴리스 명령. 미설정 시 `package.json` 의 `scripts.release` 를 쓰고, 그것도 없으면 **아무 일도 하지 않는다** |
 | `e2e_test_enabled` · `e2e_devflow_step8_enabled` | E2E 활성(기본 false) |
@@ -273,10 +278,24 @@ tools/release.sh --sync-latest v1.3.2
 | `e2e_runner_host` | e2e-runner 원격 |
 | `telegram_bot_token` · `telegram_chat_id` | 배포 알림(선택) |
 
+#### 배포 워크플로우 키 우선순위 (env 별)
+
+| 실행 경로 | 브랜치 | 키 해석 순서 (앞선 키가 비어 있지 않으면 즉시 채택) |
+|---|---|---|
+| `/aiops:merge-pr` | dev | `deploy_workflow` → `github_actions_workflow` → `deploy-cf.yml` |
+| `/aiops:verify-deploy --env=dev` | dev | `deploy_workflow` → `github_actions_workflow` → `deploy-cf.yml` |
+| `/aiops:verify-deploy --env=prod` | main | **`deploy_workflow_prod`** → `deploy_workflow` → `github_actions_workflow` → `deploy-cf.yml` |
+| `/aiops:deploy-prod` | main | **`deploy_workflow_prod`** → `deploy_workflow` → `github_actions_workflow` → `deploy-cf.yml` |
+
+- `null` 과 빈 문자열 `""` 은 **미설정으로 취급**하고 다음 키로 내려간다.
+- 실제 적용된 키는 실행 로그의 `source=<키이름>` (미설정 전부일 때 `default`) 으로 확인한다.
+- 단일 워크플로우 레포는 `deploy_workflow_prod` 를 **넣지 않는 것이 정상**이다.
+
 ### `.reviewer/profile.yaml` (`/aiops:setup` 이 생성)
 
-`repo` · `platform` · `structure` · `paths{backend,frontend,admin}` · `stack{backend,frontend,admin}` ·
-`prd_source` · `max_diff_loc`. `review-pr` 이 이 프로필로 체크리스트를 고른다.
+`repo` · `platform`(`web | mobile | both | cli`) · `structure` · `paths{backend,frontend,admin}` ·
+`stack{backend,frontend,admin}` · `prd_source` · `max_diff_loc`. `review-pr` 이 이 프로필로 체크리스트를 고른다.
+`platform: cli` 는 터미널 CLI 프로젝트(npm `bin` 엔트리, 웹/모바일 미감지)를 뜻하며 `profile` 은 표준 `web` 세트를 그대로 쓴다 (#16).
 
 ### `git config aiops.*` (워크트리·문서 스킬)
 
