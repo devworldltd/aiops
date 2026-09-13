@@ -766,7 +766,7 @@ fi
 
 ## STEP 9 — PR 생성 (`aiops:dev-pr` 서브에이전트 **필수 호출**)
 
-> 진입 조건: 직전 STEP 8 댓글에 `E2E_RESULT=PASS` 또는 `E2E_RESULT=SKIPPED` (#131) 토큰이 존재해야 합니다.
+> 진입 조건: 직전 STEP 8 댓글에 `E2E_RESULT=PASS` 또는 `E2E_RESULT=SKIPPED` (#131) 토큰이 존재해야 합니다. (`E2E_RESULT=DRY_RUN` 은 게이트 통과 신호가 아니다 — `SKIPPED` 는 devflow 자신이 의도적으로 등록하는 마커라 PASS 동등이지만, `DRY_RUN` 은 사람이 손으로 `--dry-run` 을 돌린 흔적이라 통과가 아니다. #49)
 > PR 생성 완료 후 반드시 STEP 10(리뷰)을 이어서 실행해야 합니다.
 
 **반드시 `aiops:dev-pr` 서브에이전트를 Agent 도구로 호출해야 합니다.**

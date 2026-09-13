@@ -109,12 +109,14 @@ fi
 ## 5. 실행
 
 ```bash
+# >>> qa-mobile-e2e:dry-run >>>
 # dry-run 처리
 if [[ "$DRY_RUN" == "true" ]]; then
   echo "[dry-run] env=$ENV mode=$MODE platform=$PLATFORM"
-  echo "E2E_RESULT=PASS"
+  echo "E2E_RESULT=DRY_RUN"
   exit 0
 fi
+# <<< qa-mobile-e2e:dry-run <<<
 
 # Maestro flow 경로 결정
 case "$MODE" in
@@ -212,6 +214,7 @@ E2E_RESULT=PASS
 
 마지막 줄은 반드시 다음 중 하나:
 - `E2E_RESULT=PASS` (exit 0)
+- `E2E_RESULT=DRY_RUN` (exit 0, `--dry-run` 전용 · 게이트 통과 신호 아님)
 - `E2E_RESULT=FAIL` (exit 1)
 - `E2E_ENV_ERROR=<reason>` (exit 2)
 

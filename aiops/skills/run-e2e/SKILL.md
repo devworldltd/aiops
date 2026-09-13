@@ -144,6 +144,7 @@ echo "[run-e2e] 위임 → /aiops:e2e-test $DELEGATE_ARGS"
 `--dry-run` 인 경우 감지 결과만 출력하고 즉시 종료합니다 (qa-e2e 호출 없음).
 
 ```bash
+# >>> run-e2e:dry-run >>>
 if [[ "$ARG_DRY" == "true" ]]; then
   cat <<EOF
 [run-e2e] dry-run 결과
@@ -153,10 +154,13 @@ if [[ "$ARG_DRY" == "true" ]]; then
 - 이슈 번호: ${ARG_ISSUE:-(없음)}
 - 위임 명령: /aiops:e2e-test $DELEGATE_ARGS
 EOF
-  echo "E2E_RESULT=PASS"
+  echo "E2E_RESULT=DRY_RUN"
   exit 0
 fi
+# <<< run-e2e:dry-run <<<
 ```
+
+`E2E_RESULT=DRY_RUN` 은 게이트 통과 신호가 아닙니다 — 감지 결과만 출력했을 뿐 `/aiops:e2e-test` 를 호출하지 않았습니다.
 
 ### 4.3 실 호출
 
@@ -175,6 +179,7 @@ fi
 
 | 위임 결과 마지막 줄 | run-e2e 종료 코드 |
 |--------------------|:----------------:|
+| `E2E_RESULT=DRY_RUN` | 0 |
 | `E2E_RESULT=PASS` | 0 |
 | `E2E_RESULT=FAIL` | 1 |
 | `E2E_ENV_ERROR=*` | 2 |
@@ -262,7 +267,7 @@ BLAST_RADIUS_GUARD=1 /aiops:run-e2e
 # - 감지된 환경: local
 # - 모드: full
 # - 위임 명령: /aiops:e2e-test --env=local --mode=full
-# E2E_RESULT=PASS
+# E2E_RESULT=DRY_RUN
 ```
 
 ### 7.4 후속 자동화와의 관계

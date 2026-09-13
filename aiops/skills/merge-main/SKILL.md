@@ -200,6 +200,13 @@ HAS_HC_SKIP=$(echo "$ISSUE_COMMENTS"       | grep -cE '^## ℹ️ 헬스체크 �
 HAS_FULL_HEADER=$(echo "$ISSUE_COMMENTS"   | grep -cE '^## 🌐 Dev E2E 결과 — full$'  || true)
 HAS_E2E_RESULT_PASS=$(echo "$ISSUE_COMMENTS"| grep -c 'E2E_RESULT=PASS'              || true)
 
+# 진단 전용(판정에 관여하지 않음) — dry-run 은 §4.2 차단 목록에도 §4.3 허용 목록에도 넣지 않는다 (#49).
+# 이유: 허용 조건이 AND 화이트리스트라 dry-run 은 아무 목록에 없어도 이미 통과하지 못한다.
+# 반대로 차단 목록에 넣으면, 사람이 확인용 --dry-run 을 한 번 돌려 댓글이 남는 순간
+# forge.sh 에 댓글 삭제 기능이 없어 그 이슈가 영구 차단된다(되돌릴 수 없음). 그래서 시나리오 C'(마커 부재)의
+# 사유 문자열만 구체화하는 데 그친다.
+HAS_E2E_DRY_RUN=$(echo "$ISSUE_COMMENTS"   | grep -c 'E2E_RESULT=DRY_RUN'             || true)
+
 # §4.4 분기
 if [[ "$HAS_E2E_FAIL" -gt 0 || "$HAS_E2E_RESULT_FAIL" -gt 0 ]]; then
   _block_and_exit "e2e_fail" "## ❌ Dev E2E FAIL / E2E_RESULT=FAIL" \
@@ -220,19 +227,26 @@ elif [[ "$HAS_HC_SKIP" -gt 0 ]]; then
   SKIP_REASON="healthcheck_skipped"
 else
   # 시나리오 C' (마커 부재)
+  if [[ "$HAS_E2E_DRY_RUN" -gt 0 ]]; then
+    DRY_SUFFIX="(dry_run_only)"
+    echo "[merge-main] §4 C' — dry-run 마커만 존재. dry-run 은 검증이 아니므로 통과 신호가 아닙니다. (#49)"
+  else
+    DRY_SUFFIX=""
+  fi
+
   if [[ "$SKIP_E2E_CHECK" == "true" ]]; then
     echo "[merge-main] §4 ⚠️ 마커 부재 — --skip-e2e-check 로 우회 진행"
     MARKER_QUOTE="(skip_e2e_check=true)"
-    SKIP_REASON="marker_absent_skipped"
+    SKIP_REASON="marker_absent_skipped${DRY_SUFFIX}"
   elif [[ "$E2E_REQUIRED" != "true" ]]; then
     # #131: e2e_required_for_merge_main=false 인 경우 — 경고만 출력하고 진행
     echo "[merge-main] §4 ⚠️ 마커 부재 — e2e_required_for_merge_main=false 로 진행 (경고)"
     echo "             (#131: /aiops:merge-pr §14 dev E2E 가 기본 SKIP 으로 반전됨)"
     MARKER_QUOTE="(marker_absent, e2e_not_required)"
-    SKIP_REASON="marker_absent_not_required"
+    SKIP_REASON="marker_absent_not_required${DRY_SUFFIX}"
   elif [[ "$YES" == "true" ]]; then
     # --yes 만으로는 마커 부재 우회 불가 (안전 기본값) — 명시적 거부
-    _block_and_exit "marker_absent" "" \
+    _block_and_exit "marker_absent${DRY_SUFFIX}" "" \
       "이슈 #$RECENT_ISSUE 에 PASS/FAIL 마커 모두 없음 — \`/aiops:merge-pr\` 미실행 또는 \`e2e_test_enabled=false\`. 긴급 시 \`/aiops:merge-main --skip-e2e-check\` 명시"
   else
     # 대화형 확인
@@ -242,7 +256,7 @@ else
     read -r -p "그래도 머지를 진행하시겠습니까? [y/N] " ANS
     if [[ "$ANS" =~ ^[yY]$ ]]; then
       MARKER_QUOTE="(user_confirmed, marker_absent)"
-      SKIP_REASON="marker_absent_user_confirmed"
+      SKIP_REASON="marker_absent_user_confirmed${DRY_SUFFIX}"
     else
       echo "[merge-main] §4 사용자 취소"
       exit 0
@@ -570,6 +584,7 @@ EOF
 | **D. 배포 검증 실패** | `## ⚠️ Dev 배포 검증 실패` | (사유 텍스트) | merge-pr §12/§13 | **차단** (`deploy_verify_failed`) |
 | **E. 자동 실행 SKIP** (#131) | `## ℹ️ Dev E2E 자동 실행 스킵` | (사유 텍스트) | merge-pr §14.0 | `e2e_required_for_merge_main=true` 시 `marker_absent` 차단 / 기본 false 시 경고 후 진행 |
 | **F. 헬스체크 스킵** (#42) | `## ℹ️ 헬스체크 스킵` | `healthcheck_skipped=platform_cli` | merge-pr §13 / verify-deploy §2 / deploy-prod §4 | E2E 게이트 면제하고 진행 (차단 아님) |
+| **G. dry-run 실행** (#49) | (헤더 없음 — qa-e2e 가 댓글 미등록) | `E2E_RESULT=DRY_RUN` | 사람이 수동 `--dry-run` 실행 | **검사 대상 외** — §4.2 차단 목록에도 §4.3 허용 목록에도 없음. 시나리오 C'(마커 부재)로 떨어지고 사유만 `(dry_run_only)` 접미로 구체화 |
 | (역호환) | (신규 댓글 없음) | — | — | `e2e_required_for_merge_main=true` 시 `marker_absent` / 기본 false 시 경고 후 진행 (#131) |
 
 EM DASH `—` = U+2014 (3바이트 UTF-8: `0xE2 0x80 0x94`). EN DASH `–` (U+2013) / HYPHEN `-` (U+002D) 와 절대 혼동 금지.

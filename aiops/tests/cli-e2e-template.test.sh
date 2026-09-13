@@ -245,14 +245,16 @@ echo \"__AGENT=\$AGENT\"; echo \"__ENV=\$ENV\""
 fi
 
 # ══════════════════════════════════════════════════════════════════
-# T8 — qa-e2e.md 바이트 불변 정적 가드 (AC-8): git diff main --name-only 에 부재
+# T8(개정 #49) — qa-e2e.md 의 #41 계약 불변: 전 파일 바이트 불변 대신 계약 항목 단위로 검사한다.
+#   근거: 전 파일 diff 가드(구 AC-8)는 #41 PR 의 "이 PR 은 qa-e2e.md 를 건드리지 않는다"는
+#   스코프 단언이 하니스에 영구 동결된 것이며, #49 가 dry-run 토큰 교체를 위해 이 파일을
+#   정당하게 수정하므로 원리적으로 항상 FAIL 하게 된다. #41 AC-8 이 실제로 지키려던 것은
+#   "CLI 전용 reason 6종이 웹 qa-e2e 로 유출되지 않는다"와 "qa-e2e 의 Playwright 전제가
+#   유지된다"이므로, 그 계약 항목을 직접 검사하도록 좁힌다(T18 이 이 방식 자체를 재확인한다).
 # ══════════════════════════════════════════════════════════════════
-if git -C "$REPO_ROOT" rev-parse --verify main >/dev/null 2>&1; then
-  QA_E2E_CHANGED="$(git -C "$REPO_ROOT" diff main --name-only -- aiops/agents/qa-e2e.md)"
-  check "$([[ -z "$QA_E2E_CHANGED" ]] && echo 1 || echo 0)" "T8 'git diff main --name-only' 에 aiops/agents/qa-e2e.md 없음 → 바이트 불변 (AC-8)"
-else
-  skip "T8 qa-e2e.md 바이트 불변" "로컬에 main 브랜치 참조가 없어 git diff 비교 불가 — 종료 코드 무영향"
-fi
+check "$(grep -qF '## 🌐' "$QA_E2E_MD" && echo 1 || echo 0)" "T8 qa-e2e.md 결과 헤더 계열(## 🌐) 보존"
+check "$([[ "$(grep -c 'playwright' "$QA_E2E_MD")" -ge 1 ]] && echo 1 || echo 0)" "T8 qa-e2e.md 는 여전히 Playwright 전제 유지(CLI 로 오염되지 않음)"
+check "$([[ "$(grep -cE 'cli_entry_not_found|cli_runner_tap_parse_failed' "$QA_E2E_MD")" -eq 0 ]] && echo 1 || echo 0)" "T8 qa-e2e.md 에 CLI 전용 reason(cli_entry_not_found/cli_runner_tap_parse_failed) 유출 0건 (#41 AC-8 의 실제 의도)"
 check "$([[ -f "$QA_E2E_MD" ]] && echo 1 || echo 0)" "T8 qa-e2e.md 파일 자체는 여전히 존재(삭제되지 않음)"
 
 # ══════════════════════════════════════════════════════════════════
@@ -380,12 +382,13 @@ ACTUAL_COUNT="$(printf '%s\n' "$ACTUAL_SORTED" | grep -c . || true)"
 check "$([[ "$ACTUAL_COUNT" -eq 20 ]] && echo 1 || echo 0)" "T17 templates/e2e-cli/ 실제 파일 수 = 20 (참고— 판정은 T1 diff 가 1차 근거)"
 
 # ══════════════════════════════════════════════════════════════════
-# T18 — qa-e2e.md 바이트 불변 가드 방식: shasum 하드코딩 없이 git diff 기반 (T8 과 동일 메커니즘, 재확인)
+# T18(개정 #49) — T8 판정 방식이 실제로 "전 파일 diff/shasum" 이 아니라 "계약 항목 단위 grep" 인지 재확인
 #   (자기 자신을 grep 하면 이 설명 문자열 자체가 매치되므로, T8 판정 로직이 있는 코드 구간만 검사한다)
 # ══════════════════════════════════════════════════════════════════
-T8_BLOCK="$(awk '/^# T8 /{f=1} f{print} f&&/^check .*T8 qa-e2e\.md 파일 자체/{exit}' "$SCRIPT_DIR/cli-e2e-template.test.sh")"
-check "$([[ "$(printf '%s' "$T8_BLOCK" | grep -c -- '-a 256')" -eq 0 ]] && echo 1 || echo 0)" "T18 T8 판정 로직은 shasum -a 256 하드코딩 없이 git diff main --name-only 만 사용"
-check "$(printf '%s' "$T8_BLOCK" | grep -qF 'git -C "$REPO_ROOT" diff main --name-only' && echo 1 || echo 0)" "T18 T8 판정 로직이 실제로 git diff main --name-only 를 사용함(정적 확인)"
+T8_BLOCK="$(awk '/^check .*결과 헤더 계열/{f=1} f{print} f&&/^check .*T8 qa-e2e\.md 파일 자체/{exit}' "$SCRIPT_DIR/cli-e2e-template.test.sh")"
+check "$([[ "$(printf '%s' "$T8_BLOCK" | grep -c -- '-a 256')" -eq 0 ]] && echo 1 || echo 0)" "T18 T8 판정 로직은 shasum -a 256 하드코딩을 쓰지 않음"
+check "$([[ "$(printf '%s' "$T8_BLOCK" | grep -c 'git diff main --name-only')" -eq 0 ]] && echo 1 || echo 0)" "T18 T8 판정 로직은 더 이상 git diff main --name-only(전 파일 바이트 불변)를 쓰지 않음 — 계약 항목 단위 grep 로 대체됨"
+check "$(printf '%s' "$T8_BLOCK" | grep -qF 'cli_entry_not_found' && echo 1 || echo 0)" "T18 T8 판정 로직이 CLI 전용 reason 유출 0건 검사를 실제로 포함함(#41 AC-8 의 실제 의도)"
 
 # ══════════════════════════════════════════════════════════════════
 echo "TESTS=$TOTAL PASS=$PASS FAIL=$FAIL"

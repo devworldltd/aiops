@@ -1,6 +1,6 @@
 ---
 name: deploy-prod
-description: "Prod 배포 검증 — main 머지 후 호출. CI/CD Actions(GitHub/Gitea 자동 감지) 대기 + 프로덕션 헬스체크 + smoke E2E + Q4-B 자동 롤백 + Telegram 알림. /aiops:merge-main 완료 후 다음 단계."
+description: "Prod 배포 검증 — main 머지 후 호출. CI/CD Actions(GitHub/Gitea 자동 감지) 대기 + 프로덕션 헬스체크 + smoke E2E + Q4-B 자동 롤백. /aiops:merge-main 완료 후 다음 단계."
 ---
 
 # /aiops:deploy-prod — Prod 배포 검증 + smoke E2E + Q4-B 자동 롤백
@@ -13,7 +13,7 @@ description: "Prod 배포 검증 — main 머지 후 호출. CI/CD Actions(GitHu
 4. **G4 BLAST_RADIUS_GUARD** 사전 검사 (qa-e2e 호출 전 외부 게이트)
 5. **qa-e2e `--env=prod --mode=smoke`** 호출
 6. **smoke FAIL 시 Q4-B 자동 롤백** + 재 smoke
-7. **5종 마커 댓글** 등록 + **Telegram 강제 알림** (롤백 시)
+7. **5종 마커 댓글** 등록
 
 산출물 마커 헤더 (불변 인터페이스 계약):
 
@@ -35,7 +35,7 @@ description: "Prod 배포 검증 — main 머지 후 호출. CI/CD Actions(GitHu
 | 플래그 | 기본값 | 효과 |
 |--------|--------|------|
 | `--skip-rollback` | false | smoke FAIL 시 wrangler rollback 미호출, `PROD_RESULT=FAIL_NO_ROLLBACK` 마커 후 종료 (긴급 점검 모드) |
-| `--dry-run` | false | Actions / 헬스체크 / qa-e2e / wrangler / Telegram / gh comment 호출 0건, 분기 결과만 stdout 출력 |
+| `--dry-run` | false | Actions / 헬스체크 / qa-e2e / wrangler / gh comment 호출 0건, 분기 결과만 stdout 출력 |
 | `--confirm-rollback` | false | 자동 롤백 직전 사용자 확인 (`[y/N]`) — 비대화 환경에서는 무시되고 자동 진행 |
 | `--main-sha=<40-hex>` | (없음) | main_sha 수동 지정 — 댓글 grep / git rev-parse 폴백 둘 다 우회 |
 | `--issue=<N>` | (자동 감지) | 결과 댓글 등록 이슈. 미지정 시 #120 댓글 grep 으로 발견한 이슈로 폴백 |
@@ -345,8 +345,11 @@ Agent("qa-e2e", "--env=prod --mode=smoke --issue=<ISSUE>")
 E2E_OUTPUT_FILE=$(mktemp)
 E2E_EXIT=0
 
+# dry-run mock 판별 기준(#55): "바깥으로 나가는 결과 토큰"이면 DRY_RUN 으로 분리하고,
+# "안에서만 쓰는 단계 스킵 플래그"(175·262·438 등)면 현행 유지 — 바꾸면 오히려 나빠진다.
 if [[ "$DRY_RUN" == "true" ]]; then
-  echo "E2E_RESULT=PASS" > "$E2E_OUTPUT_FILE"
+  echo "[deploy-prod] §6 DRY-RUN: smoke E2E 미실행 (내부 토큰 DRY_RUN)"
+  echo "E2E_RESULT=DRY_RUN" > "$E2E_OUTPUT_FILE"
   E2E_EXIT=0
 else
   {
@@ -371,11 +374,26 @@ E2E_LAST_LINE=$(tail -n 1 "$E2E_OUTPUT_FILE" | tr -d '\r\n')
 3분기 + 롤백 서브플로우 = 시나리오 A/B/C/D/E + S1(FAIL_NO_ROLLBACK) 매핑.
 
 ```bash
+# >>> deploy-prod:e2e-result-case >>>
 case "$E2E_EXIT:$E2E_LAST_LINE" in
 
   # ─── 시나리오 A — smoke PASS ────────────────────
   0:E2E_RESULT=PASS)
     _post_marker_A "$DEPLOYED_SHA"
+    exit 0
+    ;;
+
+  # ─── DRY-RUN — 계획만 출력, 마커 미등록 (#55) ────
+  # 순서 제약: 이 팔은 반드시 0:E2E_RESULT=PASS) 뒤, 1:E2E_RESULT=FAIL) 앞.
+  0:E2E_RESULT=DRY_RUN)
+    echo "[deploy-prod] §7 DRY-RUN: 검증 계획만 출력 — 마커 미등록"
+    echo "  main_sha        = ${MAIN_SHA:-N/A}"
+    echo "  deployed_sha    = (미조회 — 헬스체크 스킵)"
+    echo "  smoke 대상      = --env=prod --mode=smoke"
+    echo "  blast_radius    = ${BLAST_RADIUS_GUARD:+set}"
+    echo "  실행 시 등록될 마커 = 시나리오 A (smoke 통과 경로)"
+    echo "  실제 등록 마커  = 없음"
+    echo "[deploy-prod] DRY-RUN 종료 — prod 검증 통과 신호가 아님"
     exit 0
     ;;
 
@@ -385,7 +403,6 @@ case "$E2E_EXIT:$E2E_LAST_LINE" in
     # §7.1 --skip-rollback → FAIL_NO_ROLLBACK 마커 후 종료
     if [[ "$SKIP_ROLLBACK" == "true" ]]; then
       _post_marker_FAIL_NO_ROLLBACK
-      _send_telegram_force "Prod smoke FAIL — 롤백 비활성 모드 (수동 hotfix 필요)"
       exit 1
     fi
 
@@ -414,7 +431,6 @@ case "$E2E_EXIT:$E2E_LAST_LINE" in
 
     if [[ -z "$PREV_DEPLOY" ]]; then
       _post_marker_ROLLBACK_UNAVAILABLE
-      _send_telegram_force "🚨 Prod 롤백 불가 — 이전 deployment 미존재. 수동 hotfix 필요"
       exit 1
     fi
 
@@ -428,7 +444,6 @@ case "$E2E_EXIT:$E2E_LAST_LINE" in
 
     if [[ $ROLLBACK_EXIT -ne 0 ]]; then
       _post_marker_C "$PREV_DEPLOY" "rollback_command_failed"
-      _send_telegram_force "🚨 Prod wrangler rollback 명령 실패 — 즉시 확인"
       exit 1
     fi
 
@@ -455,14 +470,16 @@ case "$E2E_EXIT:$E2E_LAST_LINE" in
 
     if [[ "$HC_RETRY_PASS" != "true" ]]; then
       _post_marker_C "$PREV_DEPLOY" "rollback_healthcheck_timeout"
-      _send_telegram_force "🚨 Prod 롤백 헬스체크 타임아웃 — 즉시 확인"
       exit 1
     fi
 
     # §7.6 재 smoke E2E
     RETRY_OUTPUT_FILE=$(mktemp)
+    # dry-run mock 판별 기준(#55): "바깥으로 나가는 결과 토큰"이면 DRY_RUN 으로 분리하고,
+    # "안에서만 쓰는 단계 스킵 플래그"(175·262·438 등)면 현행 유지 — 바꾸면 오히려 나빠진다.
     if [[ "$DRY_RUN" == "true" ]]; then
-      echo "E2E_RESULT=PASS" > "$RETRY_OUTPUT_FILE"
+      echo "[deploy-prod] §7.6 DRY-RUN: 재 smoke 미실행 (내부 토큰 DRY_RUN)"
+      echo "E2E_RESULT=DRY_RUN" > "$RETRY_OUTPUT_FILE"
       RETRY_EXIT=0
     else
       {
@@ -473,20 +490,31 @@ case "$E2E_EXIT:$E2E_LAST_LINE" in
     fi
     RETRY_LAST_LINE=$(tail -n 1 "$RETRY_OUTPUT_FILE" | tr -d '\r\n')
 
+    # >>> deploy-prod:retry-result-case >>>
     case "$RETRY_EXIT:$RETRY_LAST_LINE" in
       0:E2E_RESULT=PASS)
         # 시나리오 B — 롤백 성공
         _post_marker_B "$PREV_DEPLOY"
-        _send_telegram_force "⚠️ Prod 자동 롤백 성공 (rolled_back_to=$PREV_DEPLOY)"
         exit 1   # 머지된 main 변경은 실패한 상태이므로 비정상 종료 (hotfix 강제 트리거)
+        ;;
+      # ─── DRY-RUN — 롤백 검증 계획만 출력 (#55) ────
+      # 순서 제약(강): 이 팔이 *) 보다 앞에 없으면 dry-run 이 시나리오 C(거짓 시나리오 C 마커 등록)를 타서
+      # 거짓 위험 경보를 발사한다. 토큰만 바꾸고 이 팔을 빼면 고치기 전보다 나빠진다.
+      0:E2E_RESULT=DRY_RUN)
+        echo "[deploy-prod] §7.6 DRY-RUN: 롤백 검증 계획만 출력 — 마커 미등록"
+        echo "  rolled_back_to  = ${PREV_DEPLOY:-N/A}"
+        echo "  실행 시 등록될 마커 = 시나리오 B 또는 C"
+        echo "  실제 등록 마커  = 없음"
+        echo "[deploy-prod] DRY-RUN 종료 — prod 검증 통과 신호가 아님"
+        exit 0
         ;;
       *)
         # 시나리오 C — 롤백 후에도 FAIL
         _post_marker_C "$PREV_DEPLOY" "$RETRY_LAST_LINE"
-        _send_telegram_force "🚨 Prod 롤백 후에도 smoke FAIL — 운영자 즉시 확인"
         exit 1
         ;;
     esac
+    # <<< deploy-prod:retry-result-case <<<
     ;;
 
   # ─── 시나리오 D — qa-e2e 환경 오류 (G1~G5) ──────
@@ -502,64 +530,14 @@ case "$E2E_EXIT:$E2E_LAST_LINE" in
     exit 2
     ;;
 esac
+# <<< deploy-prod:e2e-result-case <<<
 ```
 
 핵심 제약:
 
 - 종료 코드와 마지막 줄 **이중 검증** (#119 §14.2 패턴 일관).
 - 시나리오 B (롤백 성공) 도 `exit 1` — main 머지 자체는 회귀로 간주되어야 후속 hotfix 가 트리거됨.
-- DRY-RUN 시 wrangler / curl / qa-e2e / Telegram / gh comment 모두 mock — 실제 부수효과 0건.
-
----
-
-## §8 Telegram 알림 헬퍼
-
-일반(`_send_telegram`) + 강제(`_send_telegram_force`) 2종.
-
-```bash
-TELEGRAM_STATUS="skipped"
-
-_send_telegram() {
-  # 미설정 시 조용히 스킵
-  local MSG="$1"
-  local TOKEN="${TG_BOT_TOKEN:-${TELEGRAM_BOT_TOKEN:-$(jq -r '.telegram_bot_token // ""' .claude/config.json 2>/dev/null)}}"
-  local CHAT="${TG_CHAT_ID:-${TELEGRAM_CHAT_ID:-$(jq -r '.telegram_chat_id // ""' .claude/config.json 2>/dev/null)}}"
-
-  if [[ -z "$TOKEN" || -z "$CHAT" ]]; then
-    TELEGRAM_STATUS="skipped"
-    return 0
-  fi
-
-  if [[ "$DRY_RUN" == "true" ]]; then
-    echo "[deploy-prod] §8 DRY-RUN: Telegram 전송 스킵: $MSG"
-    TELEGRAM_STATUS="dry_run"
-    return 0
-  fi
-
-  curl -s -m 5 -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
-    -d chat_id="$CHAT" \
-    -d text="$MSG" \
-    >/dev/null 2>&1
-  TELEGRAM_STATUS="sent"
-}
-
-_send_telegram_force() {
-  # 미설정 시 stderr 경고 (비치명 — 댓글 마커는 critical-path)
-  local MSG="$1"
-  _send_telegram "$MSG"
-  if [[ "$TELEGRAM_STATUS" == "skipped" ]]; then
-    echo "⚠️ Telegram 미설정 — 운영자 알림 실패 (메시지: $MSG)" >&2
-    return 1
-  fi
-  return 0
-}
-```
-
-호출 규칙:
-
-- 일반 알림 (`_send_telegram`): best-effort, 시나리오 A 등 정상 흐름.
-- 강제 알림 (`_send_telegram_force`): 롤백 발생 시 (시나리오 B/C, FAIL_NO_ROLLBACK, 롤백 불가). 미설정 시 stderr 경고 + 비치명 반환.
-- 댓글 본문에 `telegram=sent|skipped|dry_run` 키 포함.
+- DRY-RUN 시 wrangler / curl / qa-e2e / gh comment 모두 mock — 실제 부수효과 0건.
 
 ---
 
@@ -588,14 +566,12 @@ _post() {
 # 시나리오 A — smoke PASS
 _post_marker_A() {
   local DEPLOYED="$1"
-  _send_telegram "Prod smoke PASS (main_sha=$MAIN_SHA)"
   _post "## 🚀 Prod 배포 검증
 
 - main_sha=$MAIN_SHA
 - deployed_sha=$DEPLOYED
 - smoke 결과: PASS
 - PROD_RESULT=PASS
-- telegram=${TELEGRAM_STATUS:-skipped}
 - verified_at: $(_now)"
 }
 
@@ -608,7 +584,6 @@ _post_marker_B() {
 - rolled_back_to=$ROLLED_TO
 - 재 smoke 결과: PASS
 - PROD_RESULT=ROLLBACK_PASS
-- telegram=${TELEGRAM_STATUS:-skipped}
 - 다음 액션: 운영자가 hotfix 진행 (main 의 회귀 원인 분석)
 - rolled_back_at: $(_now)"
 }
@@ -623,7 +598,6 @@ _post_marker_C() {
 - rolled_back_to=$ROLLED_TO
 - 재 smoke: $REASON
 - PROD_RESULT=ROLLBACK_FAIL
-- telegram=${TELEGRAM_STATUS:-skipped}
 - 다음 액션: 운영자가 prod 환경을 직접 점검 (CF 워커 상태 / DB / 외부 서비스)
 - failed_at: $(_now)"
 }
@@ -673,7 +647,6 @@ _post_marker_ROLLBACK_UNAVAILABLE() {
 - main_sha=$MAIN_SHA
 - rolled_back_to=(불가 — 이전 deployment 미존재)
 - PROD_RESULT=ROLLBACK_FAIL
-- telegram=${TELEGRAM_STATUS:-skipped}
 - 다음 액션: 수동 hotfix PR + wrangler deployments list 점검
 - failed_at: $(_now)"
 }
@@ -697,15 +670,15 @@ healthcheck_skipped=platform_cli
 
 ### 9.2 마커 매트릭스 표 (불변 — #122 문서 색인 입력)
 
-| 시나리오 | 헤더 라벨 (`^...$` 정확 일치) | PROD_RESULT | 핵심 본문 키 | Telegram | exit |
-|----------|------------------------------|-------------|--------------|----------|------|
-| **A. smoke PASS** | `## 🚀 Prod 배포 검증` | `PASS` | `main_sha`, `deployed_sha`, `telegram` | best-effort | 0 |
-| **B. 롤백 후 PASS** | `## ⚠️ Prod 자동 롤백 완료` | `ROLLBACK_PASS` | `main_sha`, `rolled_back_to`, `telegram` | **강제** | 1 |
-| **C. 롤백 후 FAIL** | `## 🚨 Prod 롤백 후 FAIL — 운영자 즉시 확인` | `ROLLBACK_FAIL` | `main_sha`, `rolled_back_to`, `telegram` | **강제 (CRITICAL)** | 1 |
-| **D. 환경 오류** | `## ⚠️ Prod E2E 환경 오류` | — | `E2E_ENV_ERROR=<reason>` | skip | 2 |
-| **E. 배포 검증 실패** | `## ⚠️ Prod 배포 검증 실패` | — | `reason`, `main_sha` | skip | 1 |
-| (S1) FAIL_NO_ROLLBACK | `## ❌ Prod smoke FAIL (--skip-rollback)` | `FAIL_NO_ROLLBACK` | `main_sha` | 강제 | 1 |
-| **F. 헬스체크 스킵** (#42) | `## ℹ️ 헬스체크 스킵` | — | `healthcheck_skipped=platform_cli` | skip | 0 |
+| 시나리오 | 헤더 라벨 (`^...$` 정확 일치) | PROD_RESULT | 핵심 본문 키 | exit |
+|----------|------------------------------|-------------|--------------|------|
+| **A. smoke PASS** | `## 🚀 Prod 배포 검증` | `PASS` | `main_sha`, `deployed_sha` | 0 |
+| **B. 롤백 후 PASS** | `## ⚠️ Prod 자동 롤백 완료` | `ROLLBACK_PASS` | `main_sha`, `rolled_back_to` | 1 |
+| **C. 롤백 후 FAIL** | `## 🚨 Prod 롤백 후 FAIL — 운영자 즉시 확인` | `ROLLBACK_FAIL` | `main_sha`, `rolled_back_to` | 1 |
+| **D. 환경 오류** | `## ⚠️ Prod E2E 환경 오류` | — | `E2E_ENV_ERROR=<reason>` | 2 |
+| **E. 배포 검증 실패** | `## ⚠️ Prod 배포 검증 실패` | — | `reason`, `main_sha` | 1 |
+| (S1) FAIL_NO_ROLLBACK | `## ❌ Prod smoke FAIL (--skip-rollback)` | `FAIL_NO_ROLLBACK` | `main_sha` | 1 |
+| **F. 헬스체크 스킵** (#42) | `## ℹ️ 헬스체크 스킵` | — | `healthcheck_skipped=platform_cli` | 0 |
 
 > 본 매트릭스는 PRD §5 인터페이스 계약과 1:1 동일. 헤더 / 키 명칭 변경 시 #122 문서와 동시 업데이트 의무.
 
@@ -717,23 +690,30 @@ healthcheck_skipped=platform_cli
 |----|----------|-----------|
 | AC-1 | smoke PASS | `forge.sh issue-comments <N> \| grep -E '^## 🚀 Prod 배포 검증$'` ≥ 1 + `grep 'PROD_RESULT=PASS'` ≥ 1 |
 | AC-2 | 롤백 후 PASS | `grep -E '^## ⚠️ Prod 자동 롤백 완료$'` + `grep 'PROD_RESULT=ROLLBACK_PASS'` + `grep 'rolled_back_to='` |
-| AC-3 | 롤백 후 FAIL | `grep -E '^## 🚨 Prod 롤백 후 FAIL — 운영자 즉시 확인$'` + `grep 'PROD_RESULT=ROLLBACK_FAIL'` + Telegram 강제 |
+| AC-3 | 롤백 후 FAIL | `grep -E '^## 🚨 Prod 롤백 후 FAIL — 운영자 즉시 확인$'` + `grep 'PROD_RESULT=ROLLBACK_FAIL'` |
 | AC-4 | BLAST_RADIUS_GUARD 미설정 | `unset BLAST_RADIUS_GUARD; /aiops:deploy-prod` → `## ⚠️ Prod E2E 환경 오류` + `E2E_ENV_ERROR=BLAST_RADIUS_GUARD_MISSING`, smoke 미실행 |
 | AC-5 | Actions FAIL / healthcheck timeout | `## ⚠️ Prod 배포 검증 실패` + `reason=actions_failed` 또는 `reason=health_timeout` |
 | AC-6 | 헤더 5종 정확 일치 | `grep -cE '^## (🚀 Prod 배포 검증\|⚠️ Prod 자동 롤백 완료\|🚨 Prod 롤백 후 FAIL — 운영자 즉시 확인\|⚠️ Prod E2E 환경 오류\|⚠️ Prod 배포 검증 실패)$'` = 5 |
 | AC-7 | Q3-C smoke 자동 정리 | qa-e2e `04-critical-crud.spec.ts` afterEach 정상 종료 (#117 위임) |
 | AC-8 | `--skip-rollback` + FAIL | wrangler rollback 미호출 + `## ❌ Prod smoke FAIL (--skip-rollback)` + `PROD_RESULT=FAIL_NO_ROLLBACK` |
-| AC-9 | Telegram 미설정 + 롤백 | 댓글 정상 등록, `telegram=skipped` 키 존재, 강제 알림 stderr 경고 + 비치명 |
 | AC-10 | main_sha 미획득 | `## ⚠️ Prod 배포 검증 실패` + `reason=main_sha_unresolved` + exit 1 |
+
+> AC-9 는 외부 알림 옵션 전제 검증이었으나 해당 기능 제거로 삭제됐다(#55). 번호는 이력 참조를 위해 재배번하지 않는다.
 
 ### 10.1 DRY-RUN 회귀 시나리오 (수동 QA)
 
-| 케이스 | 명령 | 기대 stdout 마지막 헤더 |
-|--------|------|-----------------------|
-| 정상 | `BLAST_RADIUS_GUARD=1 /aiops:deploy-prod --dry-run` | `## 🚀 Prod 배포 검증` |
-| 환경 오류 | `unset BLAST_RADIUS_GUARD; /aiops:deploy-prod --dry-run` | `## ⚠️ Prod E2E 환경 오류` |
-| 수동 SHA | `BLAST_RADIUS_GUARD=1 /aiops:deploy-prod --dry-run --main-sha=$(printf 'a%.0s' {1..40})` | `## 🚀 Prod 배포 검증` (mock PASS) |
-| SHA 위반 | `/aiops:deploy-prod --dry-run --main-sha=invalid` | `## ⚠️ Prod 배포 검증 실패` + `reason=main_sha_unresolved` |
+dry-run 은 마커를 등록하지 않으며 마커 헤더 모양(`^## ` 로 시작하는 줄)을 출력하지 않는다(#55).
+기대 출력은 `[deploy-prod]` 접두 평문 계획 줄이다.
+
+| 케이스 | 명령 | 기대 stdout 마지막 줄 | 헤더 줄 | exit |
+|--------|------|----------------------|---------|------|
+| 정상 | `BLAST_RADIUS_GUARD=1 /aiops:deploy-prod --dry-run` | `[deploy-prod] DRY-RUN 종료 — prod 검증 통과 신호가 아님` | 없음 | 0 |
+| 환경 오류 | `unset BLAST_RADIUS_GUARD; /aiops:deploy-prod --dry-run` | `- 참고: …qa-e2e.md §4 G4` | `## ⚠️ Prod E2E 환경 오류` (§5 가드 불변) | 2 |
+| 수동 SHA | `BLAST_RADIUS_GUARD=1 /aiops:deploy-prod --dry-run --main-sha=$(printf 'a%.0s' {1..40})` | 정상 케이스와 동일 평문 계획 블록 | 없음 | 0 |
+| SHA 위반 | `/aiops:deploy-prod --dry-run --main-sha=invalid` | `reason=main_sha_unresolved` | `## ⚠️ Prod 배포 검증 실패` (§7 도달 전 — 불변) | 1 |
+
+> "환경 오류"·"SHA 위반" 두 행이 여전히 마커 헤더를 갖는 것은 **의도된 결과**다.
+> 두 경로는 §7 case 에 도달하기 전에 종료하며 결정 2의 "출력 가드" 계열이라 범위 밖이다.
 
 ### 10.2 EM-DASH 바이트 검증
 
@@ -745,6 +725,18 @@ grep -E '^## 🚨 Prod 롤백 후 FAIL ' claude-ai-devops/skills/aiops:deploy-pr
 # 기대 시퀀스: ... 46 41 49 4c 20 E2 80 94 20 ec 9a b4 ec 98 81 ...
 #                            ^^^^^^^^ (U+2014 EM-DASH)
 ```
+
+### 10.3 DRY-RUN 종료 코드 계약 (#55 — 값 불변, 의미 명문화)
+
+| dry-run 상황 | exit | 의미 |
+|---|---|---|
+| 계획 해석 성공 (§7 dry-run 팔 도달) | 0 | 계획 출력만 — **prod 검증 통과 신호가 아니며** 마커를 등록하지 않는다 |
+| §7.6 롤백 검증 계획 출력 | 0 | 동일 — 롤백 성공 신호가 아니다 |
+| `BLAST_RADIUS_GUARD` 미설정 (§5) | 2 | 환경 오류 — 현행 유지 |
+| `main_sha` 미해석 (`--main-sha=invalid`) | 1 | 입력 오류 — 현행 유지 |
+
+종료 코드 **값은 바뀌지 않는다**. `qa-e2e.md` 177행과 같은 취지다 —
+0 은 dry-run 이 오류가 아님을 뜻할 뿐, 어떤 게이트에도 통과 신호로 취급되지 않는다.
 
 ---
 
@@ -786,6 +778,6 @@ BLAST_RADIUS_GUARD=1 /aiops:deploy-prod --main-sha=abcdef0123456789abcdef0123456
 |------|------|
 | `/aiops:merge-main` (#120) | `main_sha=<40-hex>` 라인 인터페이스 제공 |
 | qa-e2e (#117) | `--env=prod --mode=smoke` 실행 + G4 BLAST_RADIUS_GUARD 게이트 |
-| `/aiops:merge-pr` (#119) | §11~§17 코드 패턴 재사용 (workflow_run 대기 / 헬스체크 / Telegram 헬퍼) |
+| `/aiops:merge-pr` (#119) | §11~§17 코드 패턴 재사용 (workflow_run 대기 / 헬스체크 헬퍼) |
 
 본 스킬 완료 후 `/aiops:update-docs` (#122) 가 총 10종 마커를 일괄 색인한다.

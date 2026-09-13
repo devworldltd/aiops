@@ -57,6 +57,7 @@
 | `## 🚢 배포 완료` | 6 | QA |
 | `## ✅ Unit QA Sign-off` / `## ❌ Unit QA FAIL` | 7 | 게이트 #1 |
 | `## 🌐 로컬 E2E 결과 — full` (본문 `E2E_RESULT=PASS\|FAIL\|SKIPPED`) | 8 | 게이트 #2, merge-pr, merge-main |
+| `## ℹ️ E2E dry-run (검증 아님)` (본문 `E2E_RESULT=DRY_RUN`, `--issue` 지정 시에만 등록) | — | 게이트 대상 외 — PASS/FAIL/SKIPPED 와 달리 통과·차단 어느 목록에도 없다 (#49) |
 | `## 🚀 PR 생성 완료` | 9 | review-pr |
 | `## 🔍 PR 리뷰 완료` | 10 | merge-pr |
 | `## 🌐 Dev E2E 결과 — full` | merge-pr | merge-main |
@@ -150,8 +151,8 @@ PRD·기술 스펙·리뷰·커밋 메시지 전부 한국어다.
 | `run-mobile-e2e` | 위의 모바일판(플랫폼 자동) |
 | `e2e-onboard` | 레포를 e2e-runner 서비스에 등록(config·.env·웹훅 스니펫) |
 
-출력 계약: 마지막 줄이 `E2E_RESULT=PASS|FAIL` 또는 `E2E_ENV_ERROR=<사유>`.
-종료 코드 `0`/`1`/`2`(환경 오류).
+출력 계약: 마지막 줄이 `E2E_RESULT=PASS|FAIL|DRY_RUN` 또는 `E2E_ENV_ERROR=<사유>`.
+종료 코드 `0`/`1`/`2`(환경 오류). `DRY_RUN` 은 `--dry-run` 전용이며 게이트 통과 신호가 아니다 — 테스트를 한 건도 실행하지 않았다는 뜻이고, 종료 코드는 오류가 아니므로 `0` 그대로다(#49).
 
 `agent_hints.platform=cli` (또는 `.reviewer/profile.yaml` 폴백) 인 프로젝트는 `e2e-test` 가 Playwright 대신 `qa-e2e-cli` 로 라우팅한다(#41). CLI 는 배포 대상이 없는 **local 단일 환경**이라 `--env=dev|prod` 요청은 거부되지 않고 local 로 강등된다. `qa-e2e.md` 자체는 바이트 불변이며, CLI 전용 게이트·`<reason>` 은 `qa-e2e-cli` 문서를 따른다.
 
@@ -276,7 +277,6 @@ tools/release.sh --sync-latest v1.3.2
 | `e2e_full_paths` · `e2e_smoke_paths` · `e2e_deploy_wait_sec` | 실행 범위·대기 |
 | `e2e_run_on_merge_pr` · `e2e_required_for_merge_main` | 자동 실행·게이트 강제 |
 | `e2e_runner_host` | e2e-runner 원격 |
-| `telegram_bot_token` · `telegram_chat_id` | 배포 알림(선택) |
 
 #### 배포 워크플로우 키 우선순위 (env 별)
 

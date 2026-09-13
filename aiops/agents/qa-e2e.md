@@ -53,7 +53,7 @@ model: sonnet
 | `--env`       | `local` \| `dev` \| `prod`  | `dev`   | 1순위: 인자, 2순위: `$E2E_ENV`, 3순위: `dev`        |
 | `--mode`      | `full` \| `smoke`           | `full`  | 1순위: 인자, 2순위: `$E2E_MODE`, 3순위: `full`      |
 | `--issue`    | 정수                         | null    | 결과 등록 대상 이슈 (없으면 context 폴백 파일 사용) |
-| `--dry-run`   | flag                        | false   | 실제 실행 없이 해석 결과만 출력 후 `E2E_RESULT=PASS` |
+| `--dry-run`   | flag                        | false   | 실제 실행 없이 해석 결과만 출력 후 `E2E_RESULT=DRY_RUN` (게이트 통과 신호 아님) |
 
 ### 2.2 환경변수 폴백 / 주입
 
@@ -161,16 +161,20 @@ fi
 ### 5.1 --dry-run 처리 (G1~G5 통과 후 즉시 반환)
 
 ```bash
+# >>> qa-e2e:dry-run >>>
 if [[ "$DRY_RUN" == "true" ]]; then
   cat <<EOF
 [dry-run] env=$ENV mode=$MODE baseURL=$BASE_URL workers=${WORKERS:-auto} retries=$RETRIES
 [dry-run] test_dirs=$TEST_DIRS
 [dry-run] blast_radius_guard=$([[ -n "${BLAST_RADIUS_GUARD:-}" ]] && echo set || echo unset)
-E2E_RESULT=PASS
+E2E_RESULT=DRY_RUN
 EOF
   exit 0
 fi
+# <<< qa-e2e:dry-run <<<
 ```
+
+> `E2E_RESULT=DRY_RUN` 은 인자·환경을 해석만 했다는 뜻이며 종료 코드 0 은 dry-run 이 오류가 아님을 뜻할 뿐, 어떤 게이트에도 통과 신호로 취급되지 않는다(§7 참조).
 
 ### 5.2 실제 실행
 
@@ -282,7 +286,8 @@ E2E_RESULT=${RESULT}
 
 | 코드 | 의미                              | 마지막 줄                              |
 |------|-----------------------------------|----------------------------------------|
-| 0    | PASS (전체 통과 또는 dry-run)     | `E2E_RESULT=PASS`                      |
+| 0    | PASS (전체 통과)                  | `E2E_RESULT=PASS`                      |
+| 0    | DRY_RUN (해석만 수행, 미실행)     | `E2E_RESULT=DRY_RUN`                   |
 | 1    | FAIL (failed≥1 또는 timedOut≥1)   | `E2E_RESULT=FAIL`                      |
 | 2    | 환경 설정 오류 (G1~G5)            | `E2E_ENV_ERROR=<reason>`               |
 

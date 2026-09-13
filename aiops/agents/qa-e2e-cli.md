@@ -28,7 +28,7 @@ model: sonnet
 | `--env`       | `local` \| `dev` \| `prod`  | `dev`   | `dev`/`prod` 는 **local 로 자동 강등**(거부 아님)   |
 | `--mode`      | `full` \| `smoke`           | `full`  |                                                      |
 | `--issue`     | 정수                         | null    | 결과 등록 대상 이슈                                 |
-| `--dry-run`   | flag                        | false   | 실제 실행 없이 해석 결과만 출력                     |
+| `--dry-run`   | flag                        | false   | 실제 실행 없이 해석 결과만 출력 후 `E2E_RESULT=DRY_RUN` |
 
 ### 1.1 env 강등 (G1.5 — 신설)
 
@@ -122,7 +122,7 @@ fi
 
 ```bash
 node "$RUNNER" --mode="$MODE" --dry-run
-# 마지막 줄 E2E_RESULT=PASS, exit 0 (게이트 통과 시)
+# 마지막 줄 E2E_RESULT=DRY_RUN, exit 0 (게이트 통과 신호 아님)
 ```
 
 ### 3.2 실제 실행
@@ -209,7 +209,8 @@ env 설정 오류(exit 2)면 판정/결과 줄 대신 `E2E_ENV_ERROR=<reason>` �
 
 | 코드 | 의미                              | 마지막 줄                              |
 |------|-----------------------------------|-----------------------------------------|
-| 0    | PASS (전체 통과 또는 dry-run)     | `E2E_RESULT=PASS`                       |
+| 0    | PASS (전체 통과)                  | `E2E_RESULT=PASS`                       |
+| 0    | DRY_RUN (해석만 수행, 미실행)     | `E2E_RESULT=DRY_RUN`                    |
 | 1    | FAIL (failed≥1 또는 전부 SKIP)    | `E2E_RESULT=FAIL`                       |
 | 2    | 환경 설정 오류                    | `E2E_ENV_ERROR=<reason>`                |
 

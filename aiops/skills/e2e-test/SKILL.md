@@ -126,11 +126,13 @@ qa-e2e 에이전트 호출 — Playwright E2E 실행
 `aiops:qa-e2e` 에이전트 출력의 마지막 줄을 검사하여 종료 코드를 결정합니다.
 
 ```bash
+# >>> e2e-test:result-map >>>
 LAST_LINE=$(tail -n 1 <<<"$AGENT_OUTPUT")
 echo "$LAST_LINE"
 
 case "$LAST_LINE" in
   E2E_RESULT=PASS)    exit 0 ;;
+  E2E_RESULT=DRY_RUN) exit 0 ;;
   E2E_RESULT=FAIL)    exit 1 ;;
   E2E_ENV_ERROR=*)
     REASON="${LAST_LINE#E2E_ENV_ERROR=}"
@@ -142,11 +144,15 @@ case "$LAST_LINE" in
     exit 2
     ;;
 esac
+# <<< e2e-test:result-map <<<
 ```
+
+`E2E_RESULT=DRY_RUN` 팔이 없으면 `*)` 폴백에 걸려 dry-run 이 exit 2(환경 오류)로 회귀한다 — 반드시 `E2E_RESULT=FAIL` 팔보다 앞, `E2E_RESULT=PASS` 팔보다 뒤에 둔다.
 
 | 마지막 줄 | 종료 코드 | 의미 |
 |-----------|-----------|------|
-| `E2E_RESULT=PASS` | 0 | 전체 통과 (또는 dry-run 해석 성공) |
+| `E2E_RESULT=PASS` | 0 | 전체 통과 |
+| `E2E_RESULT=DRY_RUN` | 0 | 해석만 수행 — 게이트 통과 신호 아님 |
 | `E2E_RESULT=FAIL` | 1 | 테스트 실패 (failed≥1 또는 timedOut≥1) |
 | `E2E_ENV_ERROR=<reason>` | 2 | 환경 설정 오류 — 사유 표시 |
 

@@ -223,7 +223,6 @@ E2E_ENV_ERROR=workflow_run_not_found:$WORKFLOW
 
 - 워크플로우 \`$WORKFLOW\` 의 head_branch=dev run 을 30초 내 찾지 못함
 - 다음 액션: \`.claude/config.json\` 의 \`deploy_workflow\` 필드 확인, 또는 \`.gitea/workflows/$WORKFLOW\`(Gitea) · \`.github/workflows/$WORKFLOW\`(GitHub) 존재 여부 확인"
-  _send_telegram_notification "Dev E2E 환경 오류: workflow_run_not_found (issue=$ISSUE)" || true
   exit 2
 fi
 
@@ -244,7 +243,6 @@ if [[ $WORKFLOW_EXIT -ne 0 ]]; then
 - 다음 액션: run_url 로그 확인 후 재시도 (CI 웹 UI 에서 re-run)
 - 참고: dev 환경은 자동 롤백을 수행하지 않습니다 (Q4-A)"
 
-  _send_telegram_notification "Dev 배포 검증 실패 ($REASON, issue=$ISSUE, run=$RUN_ID)" || true
   exit 1
 fi
 ```
@@ -307,7 +305,6 @@ E2E_ENV_ERROR=empty_dev_url
 
 - \`e2e_dev_url\` / \`cf_dev_url\` 모두 비어있어 헬스체크 URL 조립 불가
 - 다음 액션: \`.claude/config.json\` 의 \`cf_dev_url\` 또는 \`e2e_dev_url\` 설정"
-  _send_telegram_notification "Dev E2E 환경 오류: empty_dev_url (issue=$ISSUE)" || true
   exit 2
 fi
 
@@ -351,7 +348,6 @@ if [[ "$HC_PASS" != "true" ]]; then
   - \`/health\` 응답에 \`deployed_sha\` 필드가 포함되는지 확인 (대상 프로젝트 책임)
   - CF 워커 배포 로그에서 빌드 SHA 주입 여부 확인
   - 참고 가이드: SKILL.md §15 \"/health deployed_sha 가이드\""
-  _send_telegram_notification "Dev 헬스체크 타임아웃 (issue=$ISSUE, url=$HC_URL)" || true
   exit 1
 fi
 
@@ -439,6 +435,7 @@ E2E_LAST_LINE=$(tail -n 1 "$E2E_OUTPUT_FILE" | tr -d '\r\n')
 
 ```bash
 case "$E2E_EXIT:$E2E_LAST_LINE" in
+  # merge-pr 은 --dry-run 을 전달하지 않는다. 0:E2E_RESULT=DRY_RUN 이 오면 규약 위반이며 아래 *) 폴백이 옳은 처리다. (#49)
   0:E2E_RESULT=PASS)
     # 시나리오 A — qa-e2e 가 `## 🌐 Dev E2E 결과 — full` 댓글을 이미 등록.
     # SKILL.md 는 추가 마커 없이 종료 (중복 헤더 등록 금지).
@@ -455,7 +452,6 @@ E2E_RESULT=FAIL
 - 상세 결과: 본 이슈의 \`## 🌐 Dev E2E 결과 — full\` 댓글 참조
 - 다음 액션: dev-be / dev-fe 수정 → STEP 6 재배포 → STEP 7~8 재실행 → \`/aiops:merge-pr\` 재시도
 - \`/aiops:merge-main\` 차단: 본 이슈에 \`E2E_RESULT=PASS\` 마커가 추가될 때까지 진행 불가"
-    _send_telegram_notification "Dev E2E FAIL (issue=$ISSUE)" || true
     exit 1
     ;;
 
@@ -468,7 +464,6 @@ E2E_ENV_ERROR=$REASON
 
 - 가이드: \`claude-ai-devops/docs/e2e-quick-start.md\` G1~G5 트러블슈팅 참조
 - 다음 액션: 환경 설정 보정 후 \`/aiops:merge-pr $ISSUE\` 재시도"
-    _send_telegram_notification "Dev E2E 환경 오류 ($REASON, issue=$ISSUE)" || true
     exit 2
     ;;
 
@@ -480,7 +475,6 @@ E2E_ENV_ERROR=qa_e2e_protocol_violation:exit=$E2E_EXIT,last_line=$(echo "$E2E_LA
 
 - qa-e2e 에이전트가 표준 출력 규약(#117)을 위반함
 - 다음 액션: qa-e2e 에이전트 SKILL/Agent 정의 확인"
-    _send_telegram_notification "Dev E2E 프로토콜 위반 (issue=$ISSUE, exit=$E2E_EXIT)" || true
     exit 2
     ;;
 esac
@@ -504,6 +498,7 @@ esac
 | **D. 배포 검증 실패** | `## ⚠️ Dev 배포 검증 실패` | (사유 텍스트) | merge-pr §12/§13 | **차단** |
 | **E. 자동 실행 SKIP** (#131) | `## ℹ️ Dev E2E 자동 실행 스킵` | (사유 텍스트) | merge-pr §14.0 | **조건부** (`e2e_required_for_merge_main=true` 시 차단, 기본 false 시 허용) |
 | **F. 헬스체크 스킵** (#42) | `## ℹ️ 헬스체크 스킵` | `healthcheck_skipped=platform_cli` | merge-pr §13 / verify-deploy §2 / deploy-prod §4 | **허용** (E2E 게이트 면제 — `e2e_required_for_merge_main` 값 무관) |
+| **G. dry-run 실행** (#49) | (헤더 없음 — qa-e2e 가 댓글 미등록) | `E2E_RESULT=DRY_RUN` | 사람이 수동 `--dry-run` 실행 | **검사 대상 외** (허용도 차단도 아님 — `--dry-run` 은 검증이 아니므로 허용 목록에, 되돌릴 수 없는 이슈 댓글에 영구 차단 권한을 주지 않기 위해 차단 목록에도 넣지 않는다) |
 | (역호환) | (신규 댓글 없음) | — | — | 검사 대상 외 |
 
 ### 14.4 grep 회귀 테스트 (#120 입장)
@@ -559,35 +554,11 @@ def health():
 
 ---
 
-## 16. Telegram 알림 헬퍼 (선택)
-
-config 또는 환경변수에 채널 정보가 있을 때만 동작하고, 미설정 시 **조용히 스킵** (반환값 0). 본 SKILL.md 의 §12 / §13 / §14 실패 분기에서 호출됩니다.
-
-```bash
-_send_telegram_notification() {
-  local MSG="$1"
-  local TOKEN="${TG_BOT_TOKEN:-${TELEGRAM_BOT_TOKEN:-$(jq -r '.telegram_bot_token // ""' .claude/config.json 2>/dev/null)}}"
-  local CHAT="${TG_CHAT_ID:-${TELEGRAM_CHAT_ID:-$(jq -r '.telegram_chat_id // ""' .claude/config.json 2>/dev/null)}}"
-
-  if [[ -z "$TOKEN" || -z "$CHAT" ]]; then
-    return 0  # 미설정 → 조용히 스킵 (정상 흐름)
-  fi
-
-  curl -s -m 5 -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
-    -d chat_id="$CHAT" \
-    -d text="$MSG" \
-    >/dev/null 2>&1 || true
-}
-```
-
-호출 위치 (실패 마커 등록 직후):
-- §12.3 / §12.5 시나리오 D 등록 후
-- §13.2 / §13.5 환경 오류 / 시나리오 D 등록 후
-- §14.2 시나리오 B / C / 프로토콜 위반 등록 후
+> §16 은 외부 알림 옵션 헬퍼 절이었으나 해당 기능 제거로 삭제됐다(#58). 번호는 §17 과의 참조 정합(예: `deploy-prod` §11~§17 재사용 표기)을 위해 재배번하지 않는다.
 
 ---
 
-## 17. AC-1~10 검증 절차 (회귀 테스트 매트릭스)
+## 17. AC-1~9 검증 절차 (회귀 테스트 매트릭스)
 
 | AC | 시나리오 | 검증 명령 |
 | --- | --- | --- |
@@ -600,7 +571,8 @@ _send_telegram_notification() {
 | AC-7 | 환경 오류 | forge.sh API 인증 실패 mock → `## ⚠️ Dev E2E 환경 오류` 등록 + exit 2 |
 | AC-8 | 타임아웃 | `e2e_deploy_wait_sec=1` → `## ⚠️ Dev 배포 검증 실패` 등록 + §14 스킵 |
 | AC-9 | /health 가이드 | `grep -c "deployed_sha" claude-ai-devops/skills/aiops:merge-pr/SKILL.md` ≥ 1 |
-| AC-10 | Telegram 옵션 | TOKEN/CHAT 미설정 → `_send_telegram_notification` no-op 반환, 설정 시 curl 호출 1회 |
+
+> AC-10 은 외부 알림 옵션 전제 검증이었으나 해당 기능 제거로 삭제됐다(#58). 번호는 이력 참조를 위해 재배번하지 않는다.
 
 ---
 

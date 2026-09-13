@@ -145,7 +145,7 @@ ls ~/.claude/plugins/cache/aiops/aiops/<버전>/skills/ | wc -l    # 32
 
 ## 릴리스 (메인테이너)
 
-**절차 정본은 [`docs/release/release-checklist.md`](docs/release/release-checklist.md)** — 게이트(하니스 7종·매니페스트 검증), 수치 정합, 상승 폭 기준, 순서. 릴리스별 기록은 [`docs/release/`](docs/release/) 에 `v<버전>.md` 로 남는다(v1.10.0 부터).
+**절차 정본은 [`docs/release/release-checklist.md`](docs/release/release-checklist.md)** — 게이트(하니스 8종·매니페스트 검증), 수치 정합, 상승 폭 기준, 순서. 릴리스별 기록은 [`docs/release/`](docs/release/) 에 `v<버전>.md` 로 남는다(v1.10.0 부터).
 
 태그 규약의 소유자는 **`tools/release.sh`** 다. 손으로 `git tag` 하지 않는다 — `latest` 이동을 잊으면 `#latest` 사용자가 낡은 버전을 최신이라 믿게 된다.
 

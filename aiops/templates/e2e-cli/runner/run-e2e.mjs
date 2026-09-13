@@ -26,6 +26,7 @@
  *
  * 출력 마지막 줄 (정확히 1줄, 뒤 공백·개행 금지):
  *   E2E_RESULT=PASS        (failed==0 && passed>=1)     exit 0
+ *   E2E_RESULT=DRY_RUN     (--dry-run, 해석만 수행)      exit 0  ※ 게이트 통과 신호 아님
  *   E2E_RESULT=FAIL        (failed>=1 이거나 전부 SKIP)  exit 1
  *   E2E_ENV_ERROR=<reason> (사전 검사 실패·러너 이상)    exit 2
  * 요약 줄: ── 요약: 총 N (Passed p / Failed f / Skipped s) · T s
@@ -167,7 +168,7 @@ async function main() {
   if (args.dryRun) {
     console.log(`[dry-run] mode=${mode} dirs=${dirs.join(',')} files=${files.length}`);
     console.log(`[dry-run] cli_entry=${entry}`);
-    printLast('E2E_RESULT=PASS');
+    printLast('E2E_RESULT=DRY_RUN');
     process.exitCode = 0;
     return;
   }

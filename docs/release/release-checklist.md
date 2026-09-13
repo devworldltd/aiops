@@ -12,7 +12,9 @@
 ## 1. 릴리스 판정 게이트
 
 - [ ] 테스트 하니스 전량 통과 — `for t in aiops/tests/*.test.sh; do bash "$t" | tail -1; done`
-      각 줄이 `TESTS=N PASS=N FAIL=0` 이어야 한다. 현재 7종 327건.
+      각 줄이 `TESTS=N PASS=N FAIL=0` 이어야 한다. 현재 **8종 413건**(#55 머지 시점).
+      ⚠️ 하니스를 추가·개정하는 PR 은 이 수치를 **같은 PR 에서** 갱신한다. 수치가 줄었다면
+      커버리지가 준 것과 구별되지 않으므로, 줄인 이유를 PR 본문에 적지 않은 감소는 거부한다.
 - [ ] 플러그인 매니페스트 — `claude plugin validate ./aiops` → `Validation passed`
 - [ ] 마켓플레이스 매니페스트 — `claude plugin validate .` → `Validation passed`
 - [ ] P0/P1 미해결 없음. P2 는 이슈로 분리돼 있으면 릴리스를 막지 않는다.

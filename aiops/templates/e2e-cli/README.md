@@ -58,8 +58,9 @@ URL 계열 키는 사용하지 않습니다.
 
 | 코드 | 의미 | 마지막 줄 |
 |------|------|-----------|
-| 0 | PASS (`failed==0 && passed>=1`, 또는 `--dry-run`) | `E2E_RESULT=PASS` |
+| 0 | PASS (`failed==0 && passed>=1`) | `E2E_RESULT=PASS` |
 | 1 | FAIL (`failed>=1` 이거나 전부 SKIP) | `E2E_RESULT=FAIL` |
+| 0 | DRY_RUN (`--dry-run` — 테스트 미실행, 해석만 수행) | `E2E_RESULT=DRY_RUN` (게이트 통과 신호 아님, #49) |
 | 2 | 환경 오류 | `E2E_ENV_ERROR=<reason>` |
 
 `<reason>` 값: `cli_entry_not_found` · `node_runtime_missing` · `cli_runner_not_available` ·
