@@ -4,7 +4,7 @@
 개별 스킬의 절차는 각 `SKILL.md` 가 정본이고, 여기서는 **전체가 어떻게 맞물리는지**를 설명한다.
 
 - 설치·업그레이드·릴리스: [`../README.md`](../README.md)
-- 스킬 33 · 에이전트 25 · 스크립트 2 · 라이선스 Apache-2.0
+- 스킬 35 · 에이전트 26 · 스크립트 2 · 라이선스 Apache-2.0
 
 ---
 
@@ -101,11 +101,11 @@ PRD·기술 스펙·리뷰·커밋 메시지 전부 한국어다.
 
 ---
 
-## 3. 스킬 34개 — 무엇을 부르면 무엇이 남나
+## 3. 스킬 35개 — 무엇을 부르면 무엇이 남나
 
 호출은 `/aiops:<이름>`. **3개(`backend`·`frontend`·`wireframe`)는 frontmatter 에
 `disable-model-invocation: true`** 가 있어 모델이 자동 선택하지 않고 사람이 슬래시로만 부른다
-(아래 ✋ 표시). 나머지 31개는 모델이 상황에 맞게 스스로 고를 수 있다.
+(아래 ✋ 표시). 나머지 32개는 모델이 상황에 맞게 스스로 고를 수 있다.
 
 > 확인법: `grep -l '^disable-model-invocation' aiops/skills/*/SKILL.md` — **frontmatter(파일 앞
 > `---` 구간) 안에 있을 때만 효력이 있다.** 본문에 있으면 아무 일도 하지 않으며, 산출물 템플릿
@@ -176,6 +176,7 @@ PRD·기술 스펙·리뷰·커밋 메시지 전부 한국어다.
 | `explain-app <앱>` | 비개발자용 구조 해설 → `docs/apps/<앱>.md` 정본 + (선택) Artifact HTML |
 | `jira-to-issue KEY-1 …` | Jira 티켓 → 이슈 변환 등록 |
 | `kms <search\|get\|register\|health>` | DevWorld KMS 로 credential 검색·조회(reveal)·등록 — 값은 환경변수/메모리에서만, 소스·`.env`·로그 기록 금지 |
+| `ai-chat <register\|status\|connect\|cycle>` | ai-chat 협업 허브 가입(레포 분석 → 토큰 생성 → KMS 보관 → 신청 → 심사) + 승인 후 작업 사이클 확인. 토큰 비노출·승인 전 호출 금지 |
 
 ---
 

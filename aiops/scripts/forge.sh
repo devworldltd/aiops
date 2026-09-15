@@ -543,15 +543,34 @@ except Exception:
     fi
   fi
 
-  # ── ③ 기존 경로 (완전 무변경 — 리뷰어 토큰 미확보/실패 시 여기로 떨어진다) ──
+  # ── ③ 기존 경로 (리뷰어 토큰 미확보/실패 시 여기로 떨어진다) ──
   payload=$(python3 -c 'import json,sys;print(json.dumps({"event":sys.argv[1],"body":sys.argv[2]}))' "$event" "$text")
   resp=$(_api POST "/repos/$OWNER/$REPO/pulls/$n/reviews" "$payload")
-  if echo "$resp" | grep -qi "approve your own\|self.approv"; then
-    echo "[forge] 자기 PR APPROVE 불가(Gitea) → COMMENT 등록" >&2
+  # Gitea 는 자기 PR 에 **APPROVE 와 REQUEST_CHANGES 를 모두** 거부한다("approve or reject
+  #   your own pull request"). 이슈 #65 이전에는 approve 계열 문구만 매칭해서 REQUEST_CHANGES
+  #   가 강등도 오류도 없이 조용히 버려졌다(devflow·bugflow 의 재작업 루프가 근거를 잃는다).
+  if echo "$resp" | grep -qi "approve your own\|reject your own\|approve or reject\|self.approv"; then
+    echo "[forge] 자기 PR ${event} 불가(Gitea) → COMMENT 등록" >&2
     payload=$(python3 -c 'import json,sys;print(json.dumps({"event":"COMMENT","body":sys.argv[1]}))' "$text")
     resp=$(_api POST "/repos/$OWNER/$REPO/pulls/$n/reviews" "$payload")
   fi
-  echo "$resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print('REVIEW_ID='+str(d.get('id',''))+' STATE='+str(d.get('state','')))" 2>/dev/null
+  # id 가 없으면 등록되지 않은 것이다. 예전에는 빈 `REVIEW_ID= STATE=` 를 찍고 0 으로 끝나
+  #   호출자가 성공으로 오인했다 — 실패는 사유와 함께 0 이 아닌 코드로 알린다(#65).
+  local rid rstate rmsg
+  rid=$(printf '%s' "$resp" | python3 -c "import json,sys
+try: print(json.load(sys.stdin).get('id') or '')
+except Exception: print('')" 2>/dev/null)
+  if [[ -z "$rid" ]]; then
+    rmsg=$(printf '%s' "$resp" | python3 -c "import json,sys
+try: print((json.load(sys.stdin).get('message') or '').strip()[:200])
+except Exception: print('')" 2>/dev/null)
+    echo "[forge] 리뷰 등록 실패(${event}) — ${rmsg:-서버 응답에 id 없음}" >&2
+    return 4
+  fi
+  rstate=$(printf '%s' "$resp" | python3 -c "import json,sys
+try: print(json.load(sys.stdin).get('state') or '')
+except Exception: print('')" 2>/dev/null)
+  echo "REVIEW_ID=$rid STATE=$rstate"
 }
 
 cmd_pr_merge() {

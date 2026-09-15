@@ -6,7 +6,7 @@ DevWorld **AI DevOps 워크플로**를 **Claude Code 플러그인 네이티브**
 > 개발 정본은 사내 Gitea 다. 공개본에는 **릴리스 트리만 새 히스토리로** 게시된다.
 >
 > 📖 **[`docs/USAGE.md`](docs/USAGE.md) — 의도 · 정책 · 결과물 포함 전체 사용법.**
-> 스킬 34개·에이전트 26개의 목록과 결과물, 마커 헤더 인터페이스, 게이트 통과 조건,
+> 스킬 35개·에이전트 26개의 목록과 결과물, 마커 헤더 인터페이스, 게이트 통과 조건,
 > 설정 표면(`config.json`·`profile.yaml`·`git config aiops.*`), 알려진 한계까지.
 
 ## 왜 v1 인가 (설계 배경)
@@ -19,9 +19,9 @@ DevWorld **AI DevOps 워크플로**를 **Claude Code 플러그인 네이티브**
 
 ## 구조
 
-- **단일 플러그인 `aiops`** — 스킬 33 + 에이전트 25 + 템플릿(E2E·모바일)을 하나의 네임스페이스 `aiops:`에.
-  - 스킬 33 중 **3개(`backend`·`frontend`·`wireframe`)는 `disable-model-invocation: true`** 로
-    모델이 자동 선택하지 않는다(사람이 슬래시로만 호출) → 모델에 노출되는 것은 30개.
+- **단일 플러그인 `aiops`** — 스킬 35 + 에이전트 26 + 템플릿(E2E·모바일)을 하나의 네임스페이스 `aiops:`에.
+  - 스킬 35 중 **3개(`backend`·`frontend`·`wireframe`)는 `disable-model-invocation: true`** 로
+    모델이 자동 선택하지 않는다(사람이 슬래시로만 호출) → 모델에 노출되는 것은 32개.
   - 크로스-플러그인 참조 없음(단일 플러그인) → 재편에 견고.
 - 스킬은 에이전트를 `aiops:planning` 처럼 참조. 슬래시 명령은 `/aiops:devflow`.
 - 템플릿은 `${CLAUDE_PLUGIN_ROOT}/templates/…`.
@@ -32,8 +32,8 @@ aiops-v1/
 ├── .claude-plugin/marketplace.json      # 마켓플레이스: aiops → ./aiops
 ├── aiops/                                # 플러그인
 │   ├── .claude-plugin/plugin.json
-│   ├── skills/     (32)                  # devflow·bugflow·chainflow·setup·qa-*·merge-*·focus·unfocus·explain-app …
-│   ├── agents/     (25)                  # planning·dev·dev-backend·qa-e2e·dev-pr …
+│   ├── skills/     (35)                  # devflow·bugflow·chainflow·setup·qa-*·merge-*·focus·unfocus·explain-app …
+│   ├── agents/     (26)                  # planning·dev·dev-backend·qa-e2e·dev-pr …
 │   ├── scripts/                          # forge.sh(이슈/PR/리뷰) · actions-wait.sh(CI 대기)
 │   └── templates/  (e2e·mobile-*)
 └── tools/transform.py                    # ai-devops → aiops 네임스페이스 전환(재현용)
