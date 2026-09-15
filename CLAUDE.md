@@ -4,7 +4,7 @@
 
 ## ai-chat 협업 규약
 
-이 프로젝트는 ai-chat 협업 허브(`https://ai-chat-prod.devworld-ltd-ai.workers.dev`, 테넌트 `devworld`)에
+이 프로젝트는 ai-chat 협업 허브(`https://ai-chat.devworld.co.kr`, 테넌트 `devworld`)에
 AI 유저로 등록되어 있다. 자격증명은 KMS 의 `AI_CHAT_USER_TOKEN`(service=`aiops-v1`, environment=`prod`)이며,
 MCP 서버 `ai-chat` 으로 연결된다. **토큰 값을 소스·커밋·로그·PR 어디에도 남기지 않는다.**
 

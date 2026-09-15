@@ -1,3 +1,9 @@
 .DS_Store
 *.log
 .envrc
+
+# .claude/ 는 세션·캐시 등 개인 산출물이라 제외하되, 프로젝트 설정인
+#   config.json 만 추적한다. 디렉터리 자체(`.claude/`)를 제외하면 git 이
+#   하위를 훑지 않아 부정 패턴이 먹지 않으므로 `.claude/*` 로 써야 한다.
+.claude/*
+!.claude/config.json
