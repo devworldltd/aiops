@@ -68,22 +68,47 @@ fi
 [[ -f LICENSE ]] || echo "::warning:: LICENSE 가 없습니다 — 외부 배포 태그에는 있어야 합니다." >&2
 
 PREV=$(git tag -l 'v*' | sort -V | tail -1)
+# 계획 줄은 **실제로 나갈 커밋**을 찍어야 한다. publish 모드는 태그를 새로 만들지 않고
+#   기존 태그의 트리를 게시하므로 main 이 아니라 그 태그를 가리킨다.
+#   실측 사고(2026-09-16): publish-only 계획이 main(cc4744d)을 찍었는데 실제로 게시된 것은
+#   기존 태그(9d7b1db)였다. 출력만 보고는 무엇이 나갔는지 알 수 없었다.
+if [[ "$MODE" == publish ]]; then
+  TARGET=$(git rev-parse --short "$TAG^{commit}")
+  LATEST_TO="$TARGET"
+else
+  TARGET=$(git rev-parse --short main)
+  LATEST_TO="$TARGET"
+fi
+
 echo "── 릴리스 계획 ──"
-echo "  태그    : $TAG  → $(git rev-parse --short main)"
+echo "  태그    : $TAG  → $TARGET$([[ "$MODE" == publish ]] && echo '  (기존 태그 — 새로 만들지 않음)')"
 echo "  version : $VER  (plugin.json 일치 확인됨)"
 echo "  직전    : ${PREV:-(없음)}"
-echo "  latest  : $(git rev-parse --short latest 2>/dev/null || echo '(없음)') → $(git rev-parse --short main)"
+echo "  latest  : $(git rev-parse --short latest 2>/dev/null || echo '(없음)') → $LATEST_TO"
 echo "  스킬    : $(ls aiops/skills | wc -l | tr -d ' ') · 에이전트 $(ls aiops/agents | wc -l | tr -d ' ')"
+
+# main 이 태그보다 앞서 있으면 **릴리스에 안 담긴 커밋이 있다.** 릴리스 노트가 그 커밋을
+#   설명하고 있으면 노트와 내용이 어긋난다(2026-09-16 v1.13.1 이 그랬다).
+if [[ "$MODE" == publish ]]; then
+  AHEAD=$(git rev-list --count "$TAG^{commit}..main" 2>/dev/null || echo 0)
+  if [[ "$AHEAD" != "0" ]]; then
+    echo "  ⚠️ main 이 이 태그보다 $AHEAD 커밋 앞서 있습니다 — 그 변경은 이 릴리스에 없습니다." >&2
+    echo "     노트가 그 커밋을 설명한다면 새 patch 릴리스를 내세요(태그 이동 금지)." >&2
+  fi
+fi
 
 [[ -n "${DRY:-}" ]] && { echo "── DRY=1 — 아무것도 하지 않았습니다."; exit 0; }
 
 # ── 태그 생성·이동 (publish 모드에서는 건너뛴다 — 이미 있다) ──────────
 if [[ "$MODE" != publish ]]; then
   git tag -a "$TAG" -m "$TAG"
-  git push origin "$TAG"
+  # push 실패를 확인하지 않으면 "생성 완료" 를 찍고 아무것도 안 나간다.
+  #   실측 사고(2026-09-16): 공개본 push 가 403 두 번으로 실패했는데 스크립트가
+  #   "게시 완료" 를 출력했다. 사내 태그는 나갔고 공개본만 안 나간 상태를 아무도 몰랐다.
+  git push origin "$TAG" || { echo "  ❌ 사내 태그 push 실패: $TAG" >&2; exit 1; }
   # `latest` 는 **이동하는 포인터**다(경량 태그). vX.Y.Z 와 달리 이력이 아니라 별칭이다.
   git tag -f latest "$TAG^{commit}" >/dev/null
-  git push -f origin latest
+  git push -f origin latest || { echo "  ❌ 사내 latest 이동 push 실패 — $TAG 태그는 이미 나갔다." >&2; exit 1; }
 else
   echo "── --publish-only: 사내 태그 생성 건너뜀 ($TAG 이미 존재) ──"
 fi
@@ -126,8 +151,16 @@ else
 
   git -C "$TMP/pub" tag -f "$TAG" >/dev/null
   git -C "$TMP/pub" tag -f latest >/dev/null
-  git -C "$TMP/pub" push -q origin HEAD:main
-  git -C "$TMP/pub" push -qf origin "$TAG" latest
+  if ! git -C "$TMP/pub" push -q origin HEAD:main; then
+    echo "  ❌ 공개본 push 실패(main) — 권한/URL 확인. **사내 태그는 이미 밀렸다.**" >&2
+    echo "     복구: 권한 해결 후 이 스크립트를 --publish-only $TAG 로 재실행." >&2
+    exit 1
+  fi
+  if ! git -C "$TMP/pub" push -qf origin "$TAG" latest; then
+    echo "  ❌ 공개본 태그 push 실패($TAG·latest) — main 은 나갔을 수 있다." >&2
+    echo "     복구: 권한 해결 후 이 스크립트를 --publish-only $TAG 로 재실행." >&2
+    exit 1
+  fi
   echo "  ✓ 공개본 $TAG · latest 게시 완료."
 fi
 
