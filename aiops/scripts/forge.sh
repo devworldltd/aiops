@@ -115,6 +115,40 @@ _guard_body() {
   return 0
 }
 
+# _no_flag <서브커맨드> <자리> <값>  -> 위치 인자 자리에 옵션이 오면 실패 (exit 2)
+#   실측 사고(2026-09-16, 이슈 #3): `issue-comment 1 --body-file x.md` 가
+#   body="--body-file" 로 **등록되고** 정상 COMMENT_ID 를 돌려줬다. 한 번의 devflow 에서
+#   서로 다른 에이전트 4명이 같은 함정에 빠졌고, 넷 다 "등록 완료" 로 보고했다.
+#   사람은 결과를 눈으로 보지만 호출자가 자동화면 종료 코드와 ID 만 본다 —
+#   틀린 호출이 0 으로 끝나고 그럴듯한 ID 를 주면 검증할 방법이 없다. 그래서 여기서 막는다.
+_no_flag() {
+  local sub="$1" slot="$2" val="${3-}"
+  # `-` 로 시작하되 **공백·줄바꿈이 없는** 값만 막는다. 플래그에는 공백이 없다.
+  #   본문이 마크다운 목록(`- 항목`)이나 수평선 뒤 문장으로 시작하는 것은 정상이므로
+  #   `-*` 만으로 거부하면 멀쩡한 호출을 막는다(하니스 E 케이스가 이 회귀를 지킨다).
+  case "$val" in
+    -*) case "$val" in
+          *[[:space:]]*) : ;;   # 공백 포함 → 본문이다
+          *) echo "[forge] $sub: '$slot' 자리에 옵션처럼 보이는 값이 왔습니다: $val" >&2
+             echo "[forge] 이 자리는 위치 인자입니다. 긴 본문은 '@파일' 로 넘기세요." >&2
+             return 2 ;;
+        esac ;;
+  esac
+  return 0
+}
+
+# _only_flag <서브커맨드> <자리> <값> <허용값>  -> 지정한 플래그 외의 옵션이면 실패
+#   pr-diff --name-only · pr-merge --delete-branch 처럼 **의도된** 위치 플래그용.
+_only_flag() {
+  local sub="$1" slot="$2" val="${3-}" allowed="$4"
+  [[ -z "$val" || "$val" == "$allowed" ]] && return 0
+  case "$val" in
+    -*) echo "[forge] $sub: 알 수 없는 옵션 '$val' ('$allowed' 만 허용)" >&2; return 2 ;;
+  esac
+  echo "[forge] $sub: '$slot' 자리에 예상치 못한 값: $val" >&2
+  return 2
+}
+
 _json_body() {  # arg: body-string | @file  -> {"body": ...}
   local a="$1"
   _guard_body "$a" || return 3
@@ -369,6 +403,8 @@ cmd_web()  { echo "$WEB"; }
 
 cmd_issue_comment() {
   local n="$1" body="$2"
+  _no_flag issue-comment 번호 "$n" || return 2
+  _no_flag issue-comment 본문 "$body" || return 2
   if [[ "$FORGE_KIND" == "github" ]]; then
     [[ "$body" == @* ]] && gh issue comment "$n" --body-file "${body#@}" || gh issue comment "$n" --body "$body"; return $?
   fi
@@ -378,6 +414,7 @@ cmd_issue_comment() {
 
 cmd_issue_comments() {
   local n="$1"
+  _no_flag issue-comments 번호 "$n" || return 2
   if [[ "$FORGE_KIND" == "github" ]]; then gh issue view "$n" --comments; return $?; fi
   _api GET "/repos/$OWNER/$REPO/issues/$n/comments?limit=100" \
     | python3 -c "import json,sys
@@ -386,14 +423,17 @@ for c in json.load(sys.stdin): print(c.get('body') or ''); print('---')" 2>/dev/
 
 cmd_issue_view() {
   local n="$1"
+  _no_flag issue-view 번호 "$n" || return 2
   if [[ "$FORGE_KIND" == "github" ]]; then gh issue view "$n" --json title,body,labels,comments; return $?; fi
   _api GET "/repos/$OWNER/$REPO/issues/$n"
 }
 
 cmd_issue_create() {
   local title="$1" body="$2"; shift 2
+  _no_flag issue-create 제목 "$title" || return 2
+  _no_flag issue-create 본문 "$body" || return 2
   local labels="" milestone=""
-  while [[ $# -gt 0 ]]; do case "$1" in --label) labels="$2"; shift 2;; --milestone) milestone="$2"; shift 2;; *) shift;; esac; done
+  while [[ $# -gt 0 ]]; do case "$1" in --label) labels="$2"; shift 2;; --milestone) milestone="$2"; shift 2;; -*) echo "[forge] 알 수 없는 옵션: $1" >&2; return 2;; *) shift;; esac; done
   if [[ "$FORGE_KIND" == "github" ]]; then
     local a=(--title "$title"); [[ "$body" == @* ]] && a+=(--body-file "${body#@}") || a+=(--body "$body"); [[ -n "$labels" ]] && a+=(--label "$labels")
     gh issue create "${a[@]}"; return $?
@@ -414,7 +454,7 @@ print(json.dumps(o))" "$title" "$body" "$labelids" "$milestone")
 
 cmd_issue_list() {
   local labels="" milestone="" state="open"
-  while [[ $# -gt 0 ]]; do case "$1" in --label) labels="$2"; shift 2;; --milestone) milestone="$2"; shift 2;; --state) state="$2"; shift 2;; *) shift;; esac; done
+  while [[ $# -gt 0 ]]; do case "$1" in --label) labels="$2"; shift 2;; --milestone) milestone="$2"; shift 2;; --state) state="$2"; shift 2;; -*) echo "[forge] 알 수 없는 옵션: $1" >&2; return 2;; *) shift;; esac; done
   if [[ "$FORGE_KIND" == "github" ]]; then
     local a=(--state "$state" --json number,title); [[ -n "$labels" ]] && a+=(--label "$labels"); [[ -n "$milestone" ]] && a+=(--milestone "$milestone")
     gh issue list "${a[@]}"; return $?
@@ -430,8 +470,9 @@ for i in json.load(sys.stdin):
 # forge.sh issue-search <query> [--state open]  -> number\ttitle (제목/본문 텍스트 매칭)
 cmd_issue_search() {
   local query="$1"; shift || true
+  _no_flag issue-search 질의 "$query" || return 2
   local state="open"
-  while [[ $# -gt 0 ]]; do case "$1" in --state) state="$2"; shift 2;; *) shift;; esac; done
+  while [[ $# -gt 0 ]]; do case "$1" in --state) state="$2"; shift 2;; -*) echo "[forge] 알 수 없는 옵션: $1" >&2; return 2;; *) shift;; esac; done
   if [[ "$FORGE_KIND" == "github" ]]; then
     gh issue list --search "$query" --state "$state" --json number,title --jq '.[] | "\(.number)\t\(.title)"'; return $?
   fi
@@ -443,6 +484,8 @@ for i in json.load(sys.stdin): print(str(i['number'])+'\t'+i.get('title',''))" 2
 
 cmd_issue_close() {
   local n="$1" comment="${2:-}"
+  _no_flag issue-close 번호 "$n" || return 2
+  _no_flag issue-close 댓글 "$comment" || return 2
   [[ -n "$comment" ]] && cmd_issue_comment "$n" "$comment" >/dev/null 2>&1
   if [[ "$FORGE_KIND" == "github" ]]; then gh issue close "$n"; return $?; fi
   _api PATCH "/repos/$OWNER/$REPO/issues/$n" '{"state":"closed"}' >/dev/null
@@ -450,6 +493,9 @@ cmd_issue_close() {
 
 cmd_pr_create() {
   local head="$1" base="$2" title="$3" body="$4"
+  for _slot in head:"$head" base:"$base" 제목:"$title" 본문:"$body"; do
+    _no_flag pr-create "${_slot%%:*}" "${_slot#*:}" || return 2
+  done
   _guard_body "$body" || return 3
   if [[ "$FORGE_KIND" == "github" ]]; then
     local a=(--head "$head" --base "$base" --title "$title"); [[ "$body" == @* ]] && a+=(--body-file "${body#@}") || a+=(--body "$body")
@@ -475,12 +521,15 @@ for p in json.load(sys.stdin):
 
 cmd_pr_view() {
   local n="$1"
+  _no_flag pr-view 번호 "$n" || return 2
   if [[ "$FORGE_KIND" == "github" ]]; then gh pr view "$n" --json number,title,body,state,headRefName,baseRefName,additions,deletions; return $?; fi
   _api GET "/repos/$OWNER/$REPO/pulls/$n"
 }
 
 cmd_pr_diff() {
   local n="$1" no="${2:-}"
+  _no_flag pr-diff 번호 "$n" || return 2
+  _only_flag pr-diff 옵션 "$no" --name-only || return 2
   if [[ "$FORGE_KIND" == "github" ]]; then [[ "$no" == "--name-only" ]] && gh pr diff "$n" --name-only || gh pr diff "$n"; return $?; fi
   if [[ "$no" == "--name-only" ]]; then
     _api GET "/repos/$OWNER/$REPO/pulls/$n/files?limit=100" | python3 -c "import json,sys
@@ -490,6 +539,9 @@ cmd_pr_diff() {
 
 cmd_pr_review() {
   local n="$1" verdict="$2" body="$3"
+  _no_flag pr-review 번호 "$n" || return 2
+  _no_flag pr-review 판정 "$verdict" || return 2
+  _no_flag pr-review 본문 "$body" || return 2
   if [[ "$FORGE_KIND" == "github" ]]; then
     local flag; case "$verdict" in APPROVE) flag=--approve;; REQUEST_CHANGES) flag=--request-changes;; *) flag=--comment;; esac
     [[ "$body" == @* ]] && gh pr review "$n" "$flag" --body-file "${body#@}" || gh pr review "$n" "$flag" --body "$body"; return $?
@@ -575,6 +627,8 @@ except Exception: print('')" 2>/dev/null)
 
 cmd_pr_merge() {
   local n="$1" del="${2:-}"
+  _no_flag pr-merge 번호 "$n" || return 2
+  _only_flag pr-merge 옵션 "$del" --delete-branch || return 2
   if [[ "$FORGE_KIND" == "github" ]]; then local a=("$n" --merge); [[ "$del" == "--delete-branch" ]] && a+=(--delete-branch); gh pr merge "${a[@]}"; return $?; fi
   local delflag=false; [[ "$del" == "--delete-branch" ]] && delflag=true
   _api POST "/repos/$OWNER/$REPO/pulls/$n/merge" "{\"Do\":\"merge\",\"delete_branch_after_merge\":$delflag}" >/dev/null 2>&1
