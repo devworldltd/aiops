@@ -20,6 +20,11 @@ PROFILE_MOBILE=$(grep -A5 '^mobile:' .reviewer/profile.yaml 2>/dev/null | grep '
 
 FRAMEWORK="${HINTS_MOBILE:-${PROFILE_MOBILE:-react-native}}"
 BUILD_SYSTEM=$(jq -r '.agent_hints.mobile.build_system // "metro"' .claude/config.json 2>/dev/null)
+# 앱 역량(권한·SDK) — /aiops:setup §20 감지 계층의 산출물. 없으면 빈 목록이다.
+# 선언된 것만 근거로 쓴다. 감지되지 않았다고 권한을 추가하지 않는다.
+CAP_PERMISSIONS=$(jq -r '.agent_hints.mobile.capabilities.permissions // [] | join(",")' .claude/config.json 2>/dev/null)
+CAP_SDKS=$(jq -r '.agent_hints.mobile.capabilities.sdks // [] | join(",")' .claude/config.json 2>/dev/null)
+
 
 case "$FRAMEWORK" in
   react-native) ;;  # 본 에이전트 진행

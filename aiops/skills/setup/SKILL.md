@@ -619,7 +619,9 @@ CI:         gitea-actions
 # Android 네이티브 — build.gradle(.kts) + AndroidManifest.xml 동시 존재
 ANDROID_DETECTED=false
 if find . -maxdepth 3 \( -name "build.gradle.kts" -o -name "build.gradle" \) ! -path "*/node_modules/*" -print -quit 2>/dev/null | grep -q .; then
-  if find . -maxdepth 4 -name "AndroidManifest.xml" ! -path "*/node_modules/*" -print -quit 2>/dev/null | grep -q .; then
+  # maxdepth 6 — 표준 레이아웃 <wrapper>/app/src/main/AndroidManifest.xml 이 깊이 5 다.
+  # 4 로 두면 android/ 래퍼를 쓰는 레포(zen-koi 등)가 통째로 미감지된다.
+  if find . -maxdepth 6 -name "AndroidManifest.xml" ! -path "*/node_modules/*" ! -path "*/build/*" -print -quit 2>/dev/null | grep -q .; then
     ANDROID_DETECTED=true
   fi
 fi
@@ -826,6 +828,7 @@ fi
 |---------|------|
 | `agent_hints` | dev-backend/dev-frontend/dev-mobile-* 등 에이전트가 동적 스택 적응에 사용 |
 | `agent_hints.mobile.framework` | /aiops:mobileflow 진입 라우팅 |
+| `agent_hints.mobile.capabilities` | §20 권한·SDK 감지 결과 — 법적 문서·광고 스킬의 근거 |
 | `agent_hints.backend.framework` | dev-backend 가이드 결정 |
 | `workspaces` | #167 모노레포 매핑 |
 | `profile` | #161 프로필 선택 |
@@ -860,6 +863,330 @@ case "$(echo "$stack_input" | tr '[:upper:]' '[:lower:]')" in
   *) DETECTED_STACK="$stack_input" ;;
 esac
 ```
+
+## §20. 모바일 앱 역량 감지 — 권한·SDK (감지 계층)
+
+`platform=mobile | both` 일 때 §15 의 프레임워크 감지에 더해 **대상 앱이 실제로 무엇을 하는지**를 읽어낸다.
+런타임 권한 선언과 서드파티 SDK 의존성이 감지 대상이며, 결과는 `agent_hints.mobile.capabilities` 에 기록된다.
+
+이 절이 필요한 이유는 산출물이 아니라 **입력** 때문이다. 법적 문서(개인정보 처리방침·이용약관)는 그 앱이
+실제로 하는 동작만 적어야 한다 — 다른 앱 문서를 복사하면 선언하지 않은 권한(카메라 등)이 섞인다.
+광고·아이콘 작업이 필요로 하는 스택 감지와 같은 입력을 쓰므로 **한 번만 정의한다**.
+
+### 감지 원칙
+
+- **선언된 것만 적는다.** 매니페스트·plist·의존성 선언에 없는 것을 추론하지 않는다.
+- **정규화한다.** 플랫폼별 원시 키를 공통 토큰으로 사상하여 Android·iOS 가 같은 어휘를 쓰게 한다.
+- **기본 언어는 추론하지 않는다.** Android 의 `res/values/` 는 한정자가 없어 어느 언어인지 기계적으로
+  알 수 없다. iOS `sourceLanguage` 가 있으면 그것을 쓰고, 없으면 `languages_base_unknown: true` 로
+  남겨 사람이 확인하게 한다 — 짐작해서 채우면 `releases.json` 에 없는 언어 칸이 생긴다.
+- **깊이 6까지 스캔한다.** 표준 Android 레이아웃 `<wrapper>/app/src/main/AndroidManifest.xml` 이 깊이 5 이고,
+  모노레포 래퍼가 한 겹 더 붙는 경우까지 감안한 값이다. `build/`·`Pods/`·`DerivedData/` 를 prune 하므로
+  깊이를 올려도 생성물은 읽지 않는다.
+- **감지 실패는 빈 목록이다.** 오류가 아니다 — 소비자가 "감지 안 됨"과 "권한 없음"을 구별할 수 있도록
+  `sources` 에 실제로 읽은 파일을 함께 남긴다.
+
+### 권한 정규화 표
+
+| Android `uses-permission` | iOS Info.plist 키 | 공통 토큰 |
+|---|---|---|
+| `CAMERA` | `NSCameraUsageDescription` | `camera` |
+| `RECORD_AUDIO` | `NSMicrophoneUsageDescription` | `microphone` |
+| `ACCESS_FINE_LOCATION` · `ACCESS_COARSE_LOCATION` | `NSLocationWhenInUseUsageDescription` · `NSLocationAlwaysAndWhenInUseUsageDescription` | `location` |
+| `READ_EXTERNAL_STORAGE` · `WRITE_EXTERNAL_STORAGE` · `READ_MEDIA_*` | `NSPhotoLibraryUsageDescription` · `NSPhotoLibraryAddUsageDescription` | `photo_library` |
+| `READ_CONTACTS` · `WRITE_CONTACTS` | `NSContactsUsageDescription` | `contacts` |
+| `POST_NOTIFICATIONS` | — (런타임 API) | `notifications` |
+| `BLUETOOTH*` | `NSBluetoothAlwaysUsageDescription` · `NSBluetoothPeripheralUsageDescription` | `bluetooth` |
+| `com.google.android.gms.permission.AD_ID` · `ACCESS_ADSERVICES_{AD_ID,ATTRIBUTION,TOPICS}` | `NSUserTrackingUsageDescription` | `tracking` |
+| `INTERNET` | — (기본 허용) | `internet` |
+
+`tracking` 은 법적 문서에서 가장 자주 누락되는 항목이다 — Android 의 `AD_ID` 와 iOS 의 ATT 가 서로 다른
+자리에 선언되어 한쪽만 보면 놓친다. 두 플랫폼을 함께 스캔하는 이유가 여기에 있다.
+
+### SDK 정규화 표
+
+| 의존성 문자열 (Gradle · SPM · Pod · npm · pub) | 공통 토큰 |
+|---|---|
+| `play-services-ads` · `GoogleMobileAds` · `google_mobile_ads` | `admob` |
+| `user-messaging-platform` · `UserMessagingPlatform` | `ump` |
+| `firebase-analytics` · `FirebaseAnalytics` | `firebase_analytics` |
+| `firebase-crashlytics` · `FirebaseCrashlytics` | `crashlytics` |
+| `play-services-auth` · `GoogleSignIn` | `google_signin` |
+| `billing` · `StoreKit` · `purchases` (RevenueCat) | `iap` |
+| `sentry` | `sentry` |
+
+### 언어 정규화 표
+
+`releases.json` 의 `languages` 는 앱마다 다르다. 기존 앱 파일을 복사하면 없는 언어 칸이 생기거나
+(사이트에 공백이 렌더된다) 실제 지원 언어가 빠지므로, **대상 레포의 실제 리소스에서 읽는다.**
+
+| 출처 | 원시 값 | 공통 토큰 |
+|---|---|---|
+| Android `res/values-*` | `values-ko` | `ko` |
+| Android `res/values-*` | `values-zh-rCN` · `values-zh-rSG` · `values-b+zh+Hans` | `zh-Hans` |
+| Android `res/values-*` | `values-zh-rTW` · `values-zh-rHK` · `values-zh-rMO` · `values-b+zh+Hant` | `zh-Hant` |
+| Android `res/values-*` | `values-pt-rBR` | `pt-BR` |
+| iOS `*.xcstrings` | `sourceLanguage` | 그 값 (기본 언어) |
+| iOS `*.xcstrings` | `strings[].localizations` 키 | 그 키 |
+| iOS `*.lproj` | `ko.lproj` | `ko` |
+
+`res/values-*` 의 한정자는 **언어가 아닌 것이 더 많다** — `values-night`·`values-land`·`values-v21`·
+`values-sw600dp` 등이 섞인다. 허용 패턴(2~3자 소문자, `-rXX`, `b+zh+Hans`)만 받고 충돌하는 UI 한정자
+(`night`·`land`·`port`·`round`·`car`·`tv`·`watch`·`television`·`ldrtl`·`ldltr`)는 먼저 걸러낸다.
+
+### 감지 코드
+
+```bash
+# >>> setup:mobile-capability-detect >>>
+# 선행 변수(앵커 밖): 없음 — 현재 디렉터리를 직접 스캔한다.
+# 출력: MOBILE_PERMISSIONS / MOBILE_SDKS / MOBILE_LANGUAGES / MOBILE_CAPABILITY_SOURCES
+#       (쉼표 구분, 빈 값 가능) + MOBILE_LANG_BASE_UNKNOWN (true|false)
+# bash 3.2 준수 — 연관배열·${v,,}·mapfile 미사용. 감지 실패는 빈 목록이며 rc=0.
+# 제외 디렉터리는 함수 안에 그대로 적는다 — 변수에 담아 비인용 전개하면
+# 셸에 따라 단어 분리가 일어나지 않아 find 가 통째로 한 인자로 받는다.
+_cap_find() {   # $1=maxdepth, $2..=매칭 조건(-name …). -type f 는 함수가 붙인다.
+  local d="$1"; shift
+  find . -maxdepth "$d" \
+    \( -name node_modules -o -name .git -o -name build -o -name Pods -o -name DerivedData \) -prune -o \
+    \( "$@" \) -type f -print 2>/dev/null
+}
+
+_CAP_PERM_RAW=""; _CAP_SDK_RAW=""; _CAP_SRC=""
+
+# ── Android: AndroidManifest.xml 의 uses-permission ──────────────────
+for _f in $(_cap_find 6 -name AndroidManifest.xml); do
+  _CAP_SRC="$_CAP_SRC $_f"
+  _CAP_PERM_RAW="$_CAP_PERM_RAW $(grep -o 'android:name="[^"]*"' "$_f" 2>/dev/null \
+    | sed 's/.*permission\.//; s/"$//' | tr '\n' ' ')"
+done
+
+# ── iOS: Info.plist 의 NS*UsageDescription 키 ────────────────────────
+for _f in $(_cap_find 6 -name 'Info.plist'); do
+  _CAP_SRC="$_CAP_SRC $_f"
+  _CAP_PERM_RAW="$_CAP_PERM_RAW $(grep -o 'NS[A-Za-z]*UsageDescription' "$_f" 2>/dev/null | tr '\n' ' ')"
+done
+
+# ── 의존성 선언 파일 (SDK) ───────────────────────────────────────────
+for _f in $(_cap_find 6 -name '*.gradle' -o -name '*.gradle.kts' -o -name 'libs.versions.toml' \
+            -o -name 'Package.swift' -o -name 'Podfile' -o -name 'project.pbxproj' \
+            -o -name 'package.json' -o -name 'pubspec.yaml'); do
+  _CAP_SRC="$_CAP_SRC $_f"
+  _CAP_SDK_RAW="$_CAP_SDK_RAW $(grep -oiE 'play-services-ads|GoogleMobileAds|google_mobile_ads|user-messaging-platform|UserMessagingPlatform|firebase-analytics|FirebaseAnalytics|firebase-crashlytics|FirebaseCrashlytics|play-services-auth|GoogleSignIn|billing|StoreKit|purchases|sentry' "$_f" 2>/dev/null | tr '\n' ' ')"
+done
+
+# ── 지원 언어 (releases.json 의 languages 근거) ──────────────────────
+_CAP_LANG_RAW=""; _CAP_HAS_ANDROID_LANG=false; _CAP_HAS_IOS_SOURCE=false
+MOBILE_LANG_BASE_UNKNOWN=false
+
+_cap_find_dir() {   # $1=maxdepth, $2..=매칭 조건. 디렉터리만 반환한다.
+  local d="$1"; shift
+  find . -maxdepth "$d" \
+    \( -name node_modules -o -name .git -o -name build -o -name Pods -o -name DerivedData \) -prune -o \
+    \( "$@" \) -type d -print 2>/dev/null
+}
+
+# Android res/values-<한정자>/ — 한정자는 언어가 아닌 것이 더 많다(night·land·v21…).
+# 허용 패턴(2~3자 소문자, -rXX, b+zh+Hans)만 받고, 충돌하는 UI 한정자는 먼저 걸러낸다.
+_cap_lang_android() {   # $1=values- 뒤 한정자 → 공통 토큰 또는 빈 출력
+  case "$1" in
+    night|notnight|land|port|round|car|tv|watch|television|ldrtl|ldltr) : ;;
+    zh-rCN|zh-rSG|b+zh+Hans)        echo zh-Hans ;;
+    zh-rTW|zh-rHK|zh-rMO|b+zh+Hant) echo zh-Hant ;;
+    *-r[A-Z][A-Z])                  echo "$1" | sed 's/-r/-/' ;;
+    [a-z][a-z]|[a-z][a-z][a-z])     echo "$1" ;;
+  esac
+}
+
+for _d in $(_cap_find_dir 7 -name 'values-*'); do
+  _q="${_d##*/values-}"
+  _tok="$(_cap_lang_android "$_q")"
+  if [ -n "$_tok" ]; then
+    _CAP_LANG_RAW="$_CAP_LANG_RAW $_tok"; _CAP_HAS_ANDROID_LANG=true
+  fi
+done
+
+# iOS .xcstrings — sourceLanguage(기본 언어) + 각 문자열의 localizations 키
+for _f in $(_cap_find 6 -name '*.xcstrings'); do
+  _CAP_SRC="$_CAP_SRC $_f"
+  if command -v jq >/dev/null 2>&1; then
+    _src="$(jq -r '.sourceLanguage // empty' "$_f" 2>/dev/null)"
+    [ -n "$_src" ] && { _CAP_LANG_RAW="$_CAP_LANG_RAW $_src"; _CAP_HAS_IOS_SOURCE=true; }
+    _CAP_LANG_RAW="$_CAP_LANG_RAW $(jq -r '[.strings[]?.localizations? // {} | keys[]] | unique | join(" ")' "$_f" 2>/dev/null)"
+  else
+    _CAP_LANG_RAW="$_CAP_LANG_RAW $(grep -oE '"[a-z]{2,3}(-[A-Za-z]{2,4})?"[[:space:]]*:[[:space:]]*\{' "$_f" 2>/dev/null \
+      | sed 's/[":{ ]//g' | tr '\n' ' ')"
+  fi
+done
+
+# 구형 프로젝트의 <lang>.lproj — build/·DerivedData/ 는 prune 되므로 소스만 잡힌다.
+for _d in $(_cap_find_dir 6 -name '*.lproj'); do
+  _b="${_d##*/}"; _CAP_LANG_RAW="$_CAP_LANG_RAW ${_b%.lproj}"
+done
+
+# Android 기본 언어(res/values/)는 한정자가 없어 기계적으로 알 수 없다.
+# iOS sourceLanguage 가 없으면 기본 언어를 추론하지 않고 "모름" 으로 남긴다.
+if [ "$_CAP_HAS_ANDROID_LANG" = "true" ] && [ "$_CAP_HAS_IOS_SOURCE" = "false" ]; then
+  MOBILE_LANG_BASE_UNKNOWN=true
+fi
+
+# ── 정규화 ───────────────────────────────────────────────────────────
+_cap_norm_perm() {   # stdin=원시 토큰 → stdout=공통 토큰(1줄 1개)
+  tr ' ' '\n' | while IFS= read -r _t; do
+    case "$_t" in
+      CAMERA|NSCameraUsageDescription)                      echo camera ;;
+      RECORD_AUDIO|NSMicrophoneUsageDescription)            echo microphone ;;
+      ACCESS_FINE_LOCATION|ACCESS_COARSE_LOCATION|NSLocation*UsageDescription) echo location ;;
+      READ_EXTERNAL_STORAGE|WRITE_EXTERNAL_STORAGE|READ_MEDIA_*|NSPhotoLibrary*UsageDescription) echo photo_library ;;
+      READ_CONTACTS|WRITE_CONTACTS|NSContactsUsageDescription) echo contacts ;;
+      POST_NOTIFICATIONS)                                   echo notifications ;;
+      BLUETOOTH*|NSBluetooth*UsageDescription)              echo bluetooth ;;
+      AD_ID|ACCESS_ADSERVICES_AD_ID|ACCESS_ADSERVICES_ATTRIBUTION|ACCESS_ADSERVICES_TOPICS|NSUserTrackingUsageDescription) echo tracking ;;
+      INTERNET)                                             echo internet ;;
+    esac
+  done
+}
+
+_cap_norm_sdk() {    # stdin=원시 토큰 → stdout=공통 토큰(1줄 1개)
+  tr ' ' '\n' | tr '[:upper:]' '[:lower:]' | while IFS= read -r _t; do
+    case "$_t" in
+      play-services-ads|googlemobileads|google_mobile_ads)  echo admob ;;
+      user-messaging-platform|usermessagingplatform)        echo ump ;;
+      firebase-analytics|firebaseanalytics)                 echo firebase_analytics ;;
+      firebase-crashlytics|firebasecrashlytics)             echo crashlytics ;;
+      play-services-auth|googlesignin)                      echo google_signin ;;
+      billing|storekit|purchases)                           echo iap ;;
+      sentry)                                               echo sentry ;;
+    esac
+  done
+}
+
+MOBILE_PERMISSIONS="$(printf '%s' "$_CAP_PERM_RAW" | _cap_norm_perm | sort -u | tr '\n' ',' | sed 's/,$//')"
+MOBILE_SDKS="$(printf '%s' "$_CAP_SDK_RAW" | _cap_norm_sdk | sort -u | tr '\n' ',' | sed 's/,$//')"
+MOBILE_CAPABILITY_SOURCES="$(printf '%s' "$_CAP_SRC" | tr ' ' '\n' | grep -v '^$' | sort -u | tr '\n' ',' | sed 's/,$//')"
+MOBILE_LANGUAGES="$(printf '%s' "$_CAP_LANG_RAW" | tr ' ' '\n' | grep -v '^$' | sort -u | tr '\n' ',' | sed 's/,$//')"
+
+echo "[setup] §20 permissions=${MOBILE_PERMISSIONS:-none} sdks=${MOBILE_SDKS:-none} languages=${MOBILE_LANGUAGES:-none}"
+[ "$MOBILE_LANG_BASE_UNKNOWN" = "true" ] && \
+  echo "[setup] §20 WARN: Android 기본 언어(res/values/)를 판정할 수 없습니다 — languages 에 기본 언어가 빠졌을 수 있습니다. 사람에게 확인하세요."
+# <<< setup:mobile-capability-detect <<<
+```
+
+앵커 문자열은 `aiops/tests/setup-mobile-capability-detect.test.sh` 의 추출 지점이므로 변경 금지.
+
+### agent_hints 확장
+
+§17 의 `mobile` 절에 `capabilities` 를 추가한다. 웹 전용 프로젝트와의 역호환을 위해 **`mobile` 키가 없으면
+이 절도 없다**. `capabilities` 가 없는 기존 config 도 유효하다 — 소비자는 빈 목록으로 취급한다.
+
+```json
+{
+  "agent_hints": {
+    "platform": "mobile",
+    "mobile": {
+      "framework": ["android-native", "ios-native"],
+      "build_system": ["gradle", "xcode"],
+      "e2e_runner": "maestro",
+      "capabilities": {
+        "permissions": ["camera", "internet", "tracking"],
+        "sdks": ["admob", "ump"],
+        "languages": ["de", "en", "es", "fr", "ja", "ko", "zh-Hans"],
+        "sources": ["./app/src/main/AndroidManifest.xml", "./ios/App/Info.plist"]
+      }
+    }
+  }
+}
+```
+
+`.reviewer/profile.yaml` 의 `mobile:` 절에도 같은 정보를 기록한다.
+
+```yaml
+mobile:
+  framework: android-native | ios-native | react-native | flutter
+  build_system: gradle | xcode | metro | flutter
+  e2e_runner: maestro
+  capabilities:
+    permissions: [camera, internet, tracking]
+    sdks: [admob, ump]
+    languages: [de, en, es, fr, ja, ko, zh-Hans]
+    # languages_base_unknown: true   # Android 기본 언어 미판정 시에만 기록
+```
+
+### config.json 기입 (배선)
+
+감지만으로는 아무 일도 일어나지 않는다. 감지 결과를 `.claude/config.json` 에 실제로 쓰는 것이 이 절이다.
+
+**실행 순서 제약 — 반드시 §13·§19 의 `agent_hints` 기입 뒤에 온다.** §19 는 `.agent_hints = $h` 로
+객체를 통째로 덮어쓰므로, 그 앞에서 `capabilities` 를 쓰면 지워진다. 순서는 다음과 같다.
+
+```
+§15 모바일 감지 → §16 platform 결정 → §13·§19 agent_hints 기입 → §20 감지 → §20 기입 → §14 확인 UI
+```
+
+```bash
+# >>> setup:mobile-capability-write >>>
+# 선행: $PLATFORM(§16), MOBILE_PERMISSIONS·MOBILE_SDKS·MOBILE_CAPABILITY_SOURCES(§20 감지),
+#       헬퍼 _config_update(§5). §13·§19 의 agent_hints 기입이 끝난 뒤에 실행해야 한다.
+# 웹 전용(platform=web|cli)은 아무것도 쓰지 않는다 — mobile 키 부재 역호환(§17).
+_cap_to_json() {   # $1=쉼표 목록 → JSON 배열 문자열 (빈 값이면 [])
+  if [ -z "$1" ]; then printf '[]'; return 0; fi
+  printf '%s' "$1" | tr ',' '\n' | grep -v '^$' | jq -R . | jq -cs .
+}
+
+if [ "${PLATFORM:-web}" = "mobile" ] || [ "${PLATFORM:-web}" = "both" ]; then
+  if command -v jq >/dev/null 2>&1; then
+    _CAP_JSON="$(jq -cn \
+      --argjson p "$(_cap_to_json "${MOBILE_PERMISSIONS:-}")" \
+      --argjson s "$(_cap_to_json "${MOBILE_SDKS:-}")" \
+      --argjson l "$(_cap_to_json "${MOBILE_LANGUAGES:-}")" \
+      --argjson f "$(_cap_to_json "${MOBILE_CAPABILITY_SOURCES:-}")" \
+      --arg     u "${MOBILE_LANG_BASE_UNKNOWN:-false}" \
+      '{permissions: $p, sdks: $s, languages: $l, sources: $f}
+       + (if $u == "true" then {languages_base_unknown: true} else {} end)')"
+    # 감지 0건이어도 기입한다 — sources 가 "읽었으나 선언이 없음"의 근거다(§20 감지 원칙).
+    if _config_update '.agent_hints.mobile.capabilities = $c' --argjson c "$_CAP_JSON"; then
+      echo "[setup] §20 capabilities 기입 완료 (permissions=${MOBILE_PERMISSIONS:-none} sdks=${MOBILE_SDKS:-none} languages=${MOBILE_LANGUAGES:-none})"
+    else
+      echo "[setup] §20 WARN: capabilities 기입 실패 — 위 오류를 확인하세요. 감지 결과는 반영되지 않았습니다."
+    fi
+  else
+    echo "[setup] §20 WARN: jq 미설치 — capabilities 기입 생략(감지 결과는 위 출력에만 남는다)."
+  fi
+else
+  echo "[setup] §20 platform=${PLATFORM:-web} — capabilities 기입 생략(웹 전용)"
+fi
+# <<< setup:mobile-capability-write <<<
+```
+
+앵커 문자열은 `aiops/tests/setup-mobile-capability-detect.test.sh` 의 추출 지점이므로 변경 금지.
+
+`agent_hints` 보존(§19) 대상에 `agent_hints.mobile.capabilities` 를 추가한다 — `/aiops:setup` 재실행 시
+감지가 실패하면(대상 레포가 일시적으로 비어 있는 등) 기존 값을 빈 목록으로 덮어쓰지 않는다.
+
+### 확인 UI 확장 (§14)
+
+`platform=mobile | both` 일 때 §14 출력에 두 줄을 추가한다. 감지 0건이면 `없음` 으로 표시하여
+"감지를 안 했다" 와 구별한다.
+
+```
+=== /aiops:setup 감지 결과 ===
+플랫폼:     mobile (android + ios)
+프레임워크: android-native + ios-native
+권한:       internet, tracking
+SDK:        admob, ump
+지원 언어:  de, en, es, fr, ja, ko, zh-Hans
+```
+
+### 소비자
+
+| 소비자 | 쓰임 |
+|---|---|
+| 법적 문서 생성 (app-portal `content/<slug>/privacy.json`) | 선언된 권한·SDK 만 근거로 조항을 쓴다 |
+| 릴리즈 노트 생성 (app-portal `content/<slug>/releases.json`) | `languages` 가 언어별 dict 의 키 집합을 정한다 |
+| 광고 스킬 | `admob`·`ump` 유무로 신규 도입인지 기존 설정 수정인지 가른다 |
+| `dev-mobile-*` 에이전트 | §17 우선순위 경로(`agent_hints` → `profile.yaml`)를 그대로 따른다 |
+
+**`capabilities` 는 근거이지 허가가 아니다.** 감지되지 않았다는 이유로 권한을 추가하거나, 감지되었다는
+이유로 조항을 자동 삽입하지 않는다 — 생성물은 사람 검토를 거친다.
 
 ## 주의사항
 
