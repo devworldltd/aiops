@@ -44,7 +44,7 @@ _block_and_exit() {
 ```
 
 핵심 제약:
-- 사유 코드는 §9 매트릭스의 11종 중 하나로 고정.
+- 사유 코드는 §9 매트릭스의 12종 중 하나로 고정.
 - `--dry-run` 시 댓글 등록 0건.
 
 ---
@@ -172,10 +172,34 @@ echo "[merge-main] §4.0 e2e_required_for_merge_main=$E2E_REQUIRED"
 
 ### 4.1 이슈 댓글 조회
 
-```bash
-# §4.1 이슈 댓글 일괄 조회 (1회만 API 호출) — forge.sh 는 댓글 본문을 `---` 구분자로 연결 출력
-ISSUE_COMMENTS=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/forge.sh" issue-comments "$RECENT_ISSUE" 2>/dev/null)
+**조회 실패와 댓글 0건은 다르다.** 둘을 같게 보면 forge 장애·인증 만료·CF Access 토큰 만료 때
+게이트가 **조용히 통과한다** — `e2e_required_for_merge_main` 이 기본값 `false` 이면 검증 없이
+dev → main 머지가 진행된다. "검사 못 함" 은 "검사했더니 마커가 없음" 이 아니다.
 
+```bash
+# >>> merge-main:comments-fetch >>>
+# §4.1 이슈 댓글 일괄 조회 (1회만 API 호출) — forge.sh 는 댓글 본문을 `---` 구분자로 연결 출력
+# 조회 실패(rc≠0)와 댓글 0건(rc=0·출력 없음)을 구분한다. 종료 코드를 버리면 둘이 같아진다.
+_MM_ERR="$(mktemp)"
+ISSUE_COMMENTS=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/forge.sh" issue-comments "$RECENT_ISSUE" 2>"$_MM_ERR")
+MM_FETCH_RC=$?
+
+if [[ "$MM_FETCH_RC" -ne 0 ]]; then
+  echo "[merge-main] §4.1 ❌ 이슈 댓글 조회 실패 (rc=$MM_FETCH_RC) — 검사를 수행하지 못했습니다."
+  head -3 "$_MM_ERR" >&2
+  rm -f "$_MM_ERR"
+  # e2e_required_for_merge_main 값과 무관하게 차단한다.
+  # 완화 모드는 "마커가 없어도 진행" 이지 "검사를 못 해도 진행" 이 아니다.
+  _block_and_exit "comments_fetch_failed" "" \
+    "forge 접속·인증(토큰·CF Access) 확인 후 재실행. 조회 실패는 마커 부재가 아니므로 완화 모드에서도 차단합니다."
+fi
+rm -f "$_MM_ERR"
+# <<< merge-main:comments-fetch <<<
+```
+
+앵커 문자열은 `aiops/tests/merge-main-fetch-failure.test.sh` 의 추출 지점이므로 변경 금지.
+
+```bash
 if [[ -z "$ISSUE_COMMENTS" ]]; then
   if [[ "$E2E_REQUIRED" == "true" ]]; then
     _block_and_exit "marker_absent" "" "이슈 #$RECENT_ISSUE 댓글 0건 — \`/aiops:merge-pr\` 실행 여부 확인"
@@ -563,6 +587,7 @@ EOF
 | `e2e_fail` | `## ❌ Dev E2E FAIL` 또는 `E2E_RESULT=FAIL` 존재 | 본 이슈의 `## 🌐 Dev E2E 결과 — full` 댓글에서 실패 케이스 확인 → 수정 → `/aiops:merge-pr` 재실행 |
 | `e2e_env_error` | `## ⚠️ Dev E2E 환경 오류` 존재 | `e2e-quick-start.md` G1~G5 가이드 → `/aiops:merge-pr` 재실행 |
 | `deploy_verify_failed` | `## ⚠️ Dev 배포 검증 실패` 존재 | CI 로그 확인 → 재배포 → `/aiops:merge-pr` 재실행 |
+| `comments_fetch_failed` | §4.1 이슈 댓글 조회가 rc≠0 으로 실패 — **검사를 수행하지 못함.** `e2e_required_for_merge_main` 값과 무관하게 차단 | forge 접속·인증(토큰·CF Access) 확인 후 재실행 |
 | `marker_absent` | A/B/C/D 마커 모두 없음 + 사용자 N 또는 비대화 | `/aiops:merge-pr` 미실행 또는 `e2e_test_enabled=false`. 긴급 시 `/aiops:merge-main --skip-e2e-check` |
 | `linked_issue_not_found` | 최근 머지 커밋에서 PR/이슈 번호 추출 실패 | 머지 커밋 메시지에 `Merge pull request #N` / `Closes #M` 포함 확인 |
 | `pr_conflict` | `--check-conflict` + `git merge-tree` 충돌 감지 | `git checkout dev && git merge origin/main` 로 충돌 해결 후 재실행 |
