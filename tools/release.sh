@@ -99,7 +99,11 @@ fi
 
 [[ -n "${DRY:-}" ]] && { echo "── DRY=1 — 아무것도 하지 않았습니다."; exit 0; }
 
+# >>> release:tag-or-skip >>>
 # ── 태그 생성·이동 (publish 모드에서는 건너뛴다 — 이미 있다) ──────────
+# 완료 메시지는 **각 분기 안에** 둔다. 바깥에 두면 publish 모드에서 태그를 만들지도
+# latest 를 옮기지도 않았는데 "생성 · 이동 완료" 를 찍는다 — 이 스크립트가 없애 온
+# "하지 않은 일을 했다고 보고" 와 같은 부류다.
 if [[ "$MODE" != publish ]]; then
   git tag -a "$TAG" -m "$TAG"
   # push 실패를 확인하지 않으면 "생성 완료" 를 찍고 아무것도 안 나간다.
@@ -109,11 +113,12 @@ if [[ "$MODE" != publish ]]; then
   # `latest` 는 **이동하는 포인터**다(경량 태그). vX.Y.Z 와 달리 이력이 아니라 별칭이다.
   git tag -f latest "$TAG^{commit}" >/dev/null
   git push -f origin latest || { echo "  ❌ 사내 latest 이동 push 실패 — $TAG 태그는 이미 나갔다." >&2; exit 1; }
+  echo "✓ $TAG 생성 · latest → $(git rev-parse --short "$TAG^{commit}") 이동 완료."
 else
   echo "── --publish-only: 사내 태그 생성 건너뜀 ($TAG 이미 존재) ──"
+  echo "  ℹ️ 사내 태그·latest 는 건드리지 않았습니다 — 공개본만 게시합니다."
 fi
-
-echo "✓ $TAG 생성 · latest → $(git rev-parse --short "$TAG^{commit}") 이동 완료."
+# <<< release:tag-or-skip <<<
 
 # ── 공개본 게시 ──────────────────────────────────────────────────────
 # 왜 스크립트에 넣나: 수동이면 잊는다. 잊으면 `#latest` 를 핀한 외부 사용자가 **옛 버전을 최신이라
