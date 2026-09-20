@@ -85,9 +85,18 @@ python3 "${CLAUDE_PLUGIN_ROOT}/scripts/appstore_upload.py" --slug <slug> --root 
 | 앱이 없음 | **신규** — 앱 레코드 생성(**불가역**), 메타데이터 전량, 설문 전량 |
 | 조회 실패 (HTTP 4xx/5xx) | **중단.** 신규로 가정하지 않는다 |
 
-앱 레코드 생성은 이 스킬이 하지 않는다 — **사람이 App Store Connect 에서 만든다.**
-`HANDOFF_REQUIRED=app_record` 를 남기고 멈춘다. 자동화 가능하지만 되돌릴 수 없고,
-이름·기본 언어·번들 ID 가 한 번 정해지면 바꾸기 어렵다.
+앱 레코드 생성은 이 스킬이 하지 않는다. `HANDOFF_REQUIRED=app_record` 를 남기고 멈추고
+[`/aiops:app-record`](../app-record/SKILL.md) 로 넘긴다.
+
+**ASC API 로는 앱을 만들 수 없다.** Apple 공식 문서가 명시한다 — `apps` 리소스는 이미 있는
+앱을 읽고 고치는 용도다.
+
+> Don't use this API to create new apps; instead, create new apps on the App Store Connect website.
+
+> **정정(2026-09-20).** 이 자리에 "이름·기본 언어·번들 ID 가 한 번 정해지면 바꾸기 어렵다" 고
+> 적혀 있었는데 **확인하지 않은 단정이었다.** ASC API `Modify an app` 은
+> **번들 ID 와 기본 언어까지** 고칠 수 있다. 바꾸기 어려운 쪽은 Android 다 — Play 의
+> 패키지명은 영구다(`/aiops:app-record` §4). 비대칭은 **생성이 아니라 생성 이후**에 있다.
 
 ## §4 사전 점검 — 출시 도중이 아니라 여기서 드러나야 한다
 

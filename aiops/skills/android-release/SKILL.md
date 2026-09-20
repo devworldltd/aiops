@@ -227,7 +227,9 @@ python3 "${CLAUDE_PLUGIN_ROOT}/scripts/play_upload.py" --slug <slug> --root <roo
 | HTTP 403 | 권한 없음 — 앱 권한 또는 API 사용 설정 |
 | 그 밖의 실패 | **중단.** 신규로 가정하지 않는다 |
 
-앱 레코드 생성은 이 스킬이 하지 않는다. `HANDOFF_REQUIRED=app_record` 를 남기고 멈춘다.
+앱 레코드 생성은 이 스킬이 하지 않는다. `HANDOFF_REQUIRED=app_record` 를 남기고 멈추고,
+[`/aiops:app-record`](../app-record/SKILL.md) 로 넘긴다 — **Play Console 에 생성 API 가 없어**
+브라우저가 유일한 길이다.
 
 ## §5 사전 점검
 
