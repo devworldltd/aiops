@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import plistlib
 import re
@@ -88,20 +89,52 @@ def detect_bundle_id(root: Path, project: Path, explicit: str | None) -> str:
 
 # --------------------------------------------------------------------------- 접근 확인
 
-def verify_access(api_key: dict, bundle_id: str) -> None:
-    """앱을 한 건 조회해 자격증명과 권한을 확인한다. **아무것도 바꾸지 않는다.**"""
-    try:
-        import jwt  # PyJWT
-    except ImportError:
-        print("⚠️  PyJWT 가 없어 API 접근 확인을 건너뜁니다 (pip install pyjwt cryptography)")
-        return
+def _asc_jwt(api_key: dict) -> str:
+    """ASC 용 ES256 JWT 를 만든다. **PyJWT 를 쓰지 않는다.**
+
+    예전에는 PyJWT 가 없으면 접근 확인을 건너뛰고 **종료 코드 0 으로 통과**했다.
+    `--dry-run` 의 목적이 접근 확인인데 그 확인을 못 한 채 성공으로 끝났다(zen-koi #38).
+    `cryptography` 는 `play_upload.py` 의 `google-auth` 가 이미 끌어온다 — 의존성이
+    하나 줄고 건너뛸 이유도 사라진다.
+
+    ES256 의 함정은 하나다: `sign()` 이 돌려주는 DER 서명을 **R‖S 고정 32바이트씩**으로
+    바꿔야 한다. `decode_dss_signature` 가 그 일을 한다.
+    """
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec, utils as asym_utils
+
+    def b64u(raw: bytes) -> bytes:
+        return base64.urlsafe_b64encode(raw).rstrip(b"=")
 
     now = int(time.time())
-    token = jwt.encode(
-        {"iss": api_key["issuer_id"], "iat": now, "exp": now + 600, "aud": "appstoreconnect-v1"},
-        api_key["private_key"], algorithm="ES256",
-        headers={"kid": api_key["key_id"], "typ": "JWT"},
-    )
+    hdr = b64u(json.dumps({"alg": "ES256", "kid": api_key["key_id"], "typ": "JWT"},
+                          separators=(",", ":")).encode())
+    pld = b64u(json.dumps({"iss": api_key["issuer_id"], "iat": now, "exp": now + 600,
+                           "aud": "appstoreconnect-v1"}, separators=(",", ":")).encode())
+    msg = hdr + b"." + pld
+    key = serialization.load_pem_private_key(api_key["private_key"].encode(), password=None)
+    r, s = asym_utils.decode_dss_signature(key.sign(msg, ec.ECDSA(hashes.SHA256())))
+    return (msg + b"." + b64u(r.to_bytes(32, "big") + s.to_bytes(32, "big"))).decode()
+
+
+def verify_access(api_key: dict, bundle_id: str) -> None:
+    """앱을 한 건 조회해 자격증명과 권한을 확인한다. **아무것도 바꾸지 않는다.**
+
+    **건너뛰지 않는다.** 확인할 수 없으면 종료 코드 2 로 멈춘다 — "키가 KMS 에 있다" 는
+    "그 키로 Apple 에 인증된다" 는 뜻이 아니다. `play_upload.py` 의 `--dry-run` 과 같다.
+    """
+    try:
+        token = _asc_jwt(api_key)
+    except ImportError as e:
+        print(f"❌ cryptography 가 없어 API 접근을 확인하지 못했습니다 — {e}", file=sys.stderr)
+        print("   pip install cryptography. **확인했다고 보지 않습니다.**", file=sys.stderr)
+        raise SystemExit(2)
+    except Exception as e:
+        print(f"❌ API 키로 토큰을 만들지 못했습니다 — {e}", file=sys.stderr)
+        print("   key_id·issuer_id·private_key 형식을 확인하세요. **확인했다고 보지 않습니다.**",
+              file=sys.stderr)
+        raise SystemExit(2)
+
     req = urllib.request.Request(
         f"https://api.appstoreconnect.apple.com/v1/apps?filter[bundleId]={bundle_id}",
         headers={"Authorization": f"Bearer {token}"},
@@ -189,7 +222,8 @@ def main() -> int:
     ap.add_argument("--project", type=Path, help=".xcodeproj (생략 시 자동 탐색)")
     ap.add_argument("--scheme", help="생략 시 project.yml 또는 파일명에서")
     ap.add_argument("--bundle-id", help="생략 시 project.yml / pbxproj 에서")
-    ap.add_argument("--team-id", default="", help="ExportOptions 를 새로 만들 때 필요")
+    ap.add_argument("--team-id", default="",
+                    help="생략 시 ExportOptions.plist → project.yml → pbxproj 순으로 찾습니다")
     ap.add_argument("--export-options", type=Path, help="생략 시 <root>/ExportOptions.plist, 없으면 생성")
     ap.add_argument("--archive", type=Path, help="생략 시 <root>/build/<scheme>.xcarchive")
     ap.add_argument("--export-dir", type=Path, help="생략 시 <root>/build/export")
@@ -234,7 +268,8 @@ def main() -> int:
 
     export_options = args.export_options or (root / "ExportOptions.plist")
     if not args.archive_only:
-        export_options = sc.ensure_export_options(export_options, args.team_id)
+        team_id, team_src = sc.find_team_id(root, project / "project.pbxproj", args.team_id)
+        export_options = sc.ensure_export_options(export_options, team_id, team_src)
 
     if not args.skip_archive:
         archive(project, scheme, archive_path)

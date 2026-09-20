@@ -346,7 +346,43 @@ EXPORT_OPTIONS_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
 """
 
 
-def ensure_export_options(path: Path, team_id: str) -> Path:
+def find_team_id(root: Path, pbxproj: Path, explicit: str = "") -> tuple[str, str]:
+    """(팀 ID, 출처) 를 돌려준다. 찾지 못하면 ("", "").
+
+    **추측하지 않되, 이미 읽고 있는 파일은 읽는다.** 팀 ID 는 버전·번들 ID 와 같은
+    `project.yml` 안에 있는데 그것만 인자로 요구했다 — 사람이 파일에서 복사해 넘기는
+    일을 시켰다(zen-koi #39).
+
+    여러 팀에 속한 계정에서 **엉뚱한 팀으로 서명하는 것**이 이 값의 실패 방식이라
+    출처를 함께 돌려준다. 호출부가 그것을 출력한다.
+    """
+    if explicit:
+        return explicit, "--team-id"
+
+    # 기존 ExportOptions.plist 가 있으면 그 값이 이미 쓰이고 있는 값이다.
+    for cand in (root / "ios/ExportOptions.plist", root / "ExportOptions.plist"):
+        if cand.is_file():
+            m = re.search(r"<key>teamID</key>\s*<string>([^<]+)</string>",
+                          cand.read_text(encoding="utf-8", errors="replace"))
+            if m:
+                return m.group(1).strip(), str(cand)
+
+    yml = xcodegen_project(root)
+    if yml is not None:
+        m = re.search(r"DEVELOPMENT_TEAM:\s*\"?([A-Z0-9]+)\"?", yml.read_text(encoding="utf-8"))
+        if m:
+            return m.group(1), str(yml)
+
+    # XcodeGen 을 안 쓰는 레포는 pbxproj 에만 있다 — 번들 ID 와 같은 폴백 순서다.
+    if pbxproj and pbxproj.exists():
+        v = _pbx_value(pbxproj, "DEVELOPMENT_TEAM")
+        if v:
+            return v, str(pbxproj)
+
+    return "", ""
+
+
+def ensure_export_options(path: Path, team_id: str, team_src: str = "") -> Path:
     """ExportOptions plist 가 없으면 만든다. 레포마다 경로·이름이 다르고 아예 없기도 하다.
 
     **있으면 절대 덮어쓰지 않는다.** 한 레포에 AppStore·TestFlight 용이 따로 있고 내용이 다르다.
@@ -358,8 +394,12 @@ def ensure_export_options(path: Path, team_id: str) -> Path:
     if path.is_file():
         return path
     if not team_id:
-        sys.exit(f"❌ {path} 가 없고 --team-id 도 주어지지 않아 생성할 수 없습니다.")
+        sys.exit(
+            f"❌ {path} 가 없고 팀 ID 를 어디서도 찾지 못해 생성할 수 없습니다.\n"
+            "   찾아본 곳: --team-id · 기존 ExportOptions.plist · project.yml(DEVELOPMENT_TEAM) · pbxproj\n"
+            "   **추측하지 않습니다.** --team-id 로 주거나 project.yml 에 DEVELOPMENT_TEAM 을 두세요."
+        )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(EXPORT_OPTIONS_TEMPLATE.format(team_id=team_id), encoding="utf-8")
-    print(f"[store] {path} 생성 (teamID={team_id})")
+    print(f"[store] {path} 생성 (teamID={team_id}{', 출처: ' + team_src if team_src else ''})")
     return path
