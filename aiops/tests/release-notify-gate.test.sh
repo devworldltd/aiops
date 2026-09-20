@@ -136,8 +136,24 @@ check "$(echo "$GATE_OUT" | grep -q '건너' && echo 1)" "D2 건너뛴 사실을
 eval "$(cd "$REPO_ROOT" && MODE=publish bash -c '. "$0" >/dev/null 2>&1; declare -f _rel_headers _rel_tokens; declare -p _REL_EMOJI_PAT _REL_TOKEN_PAT' "$GATE_FILE")"
 
 cd "$REPO_ROOT" || exit 1
-HDR_N=$(_rel_headers HEAD | grep -c . || true)
-TOK_N=$(_rel_tokens  HEAD | grep -c . || true)
+
+# **작업 트리를 본다 — HEAD 가 아니다.**
+# HEAD 만 보면 아직 커밋되지 않은 값은 보이지 않는다. 그러면 계약 위반이
+# **릴리스된 뒤에야** 잡힌다 — 실제로 v1.21.0 이 `console` ⊂ `store_console_session`
+# 위반을 그대로 내보냈고, 다음 사이클에서야 드러났다(2026-09-20).
+# 커밋 전에 걸려야 게이트다.
+_wt_tokens()  { LC_ALL=C grep -rhoE "$_REL_TOKEN_PAT" aiops/skills aiops/agents 2>/dev/null | LC_ALL=C sort -u; }
+_wt_headers() { LC_ALL=C grep -rhoE "$_REL_EMOJI_PAT" aiops/skills aiops/agents 2>/dev/null \
+                  | sed 's/[[:space:]]*$//' | LC_ALL=C sort -u; }
+
+HDR_N=$(_wt_headers | grep -c . || true)
+TOK_N=$(_wt_tokens  | grep -c . || true)
+
+# HEAD 와 작업 트리가 갈리면 그 사실을 보여준다 — 무엇을 검사했는지 사람이 알아야 한다
+HDR_HEAD=$(_rel_headers HEAD | grep -c . || true)
+TOK_HEAD=$(_rel_tokens  HEAD | grep -c . || true)
+[[ "$HDR_N" != "$HDR_HEAD" || "$TOK_N" != "$TOK_HEAD" ]] && \
+  echo "# 작업 트리(토큰 $TOK_N · 헤더 $HDR_N) ≠ HEAD(토큰 $TOK_HEAD · 헤더 $HDR_HEAD) — 작업 트리로 검사합니다"
 
 # 이모지 선두만 골라야 한다. '비ASCII' 로 잡으면 한글 절 제목이 섞인다(실측 379종).
 check "$([[ "$HDR_N" -gt 10 && "$HDR_N" -lt 100 ]] && echo 1)" \
@@ -145,12 +161,12 @@ check "$([[ "$HDR_N" -gt 10 && "$HDR_N" -lt 100 ]] && echo 1)" \
 check "$([[ "$TOK_N" -ge 10 ]] && echo 1)" "E2 토큰 추출이 비어 있지 않다 (${TOK_N}종)"
 
 # 한글 절 제목이 섞이지 않았는지 직접 확인한다 — 개수만으로는 종류를 모른다
-check "$(_rel_headers HEAD | grep -qv '^## ' && echo 0 || echo 1)" "E3 추출된 헤더가 모두 '## ' 로 시작한다"
-check "$(_rel_headers HEAD | grep -q '§' && echo 0 || echo 1)" "E4 § 절 제목이 섞이지 않았다"
-check "$(_rel_headers HEAD | grep -q '📝' && echo 1)" "E5 계약이 예로 든 이모지 마커가 실제로 잡힌다"
+check "$(_wt_headers | grep -qv '^## ' && echo 0 || echo 1)" "E3 추출된 헤더가 모두 '## ' 로 시작한다"
+check "$(_wt_headers | grep -q '§' && echo 0 || echo 1)" "E4 § 절 제목이 섞이지 않았다"
+check "$(_wt_headers | grep -q '📝' && echo 1)" "E5 계약이 예로 든 이모지 마커가 실제로 잡힌다"
 
 # 계약 제약: 새 값이 기존 값의 부분 문자열이면 앵커 없는 grep 이 오판한다
-DUP=$(_rel_tokens HEAD | grep '^HANDOFF_' | sed 's/^[A-Z_]*=//' | LC_ALL=C sort -u | awk '
+DUP=$(_wt_tokens | grep '^HANDOFF_' | sed 's/^[A-Z_]*=//' | LC_ALL=C sort -u | awk '
         {v[NR]=$0} END{for(i=1;i<=NR;i++)for(j=1;j<=NR;j++) if(i!=j && index(v[j],v[i])) print v[i]" in "v[j]}')
 check "$([[ -z "$DUP" ]] && echo 1)" "E6 HANDOFF 값끼리 부분 문자열 포함 없음 ${DUP:+($DUP)}"
 
