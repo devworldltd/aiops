@@ -97,31 +97,55 @@ check "$([[ "$out" == "from_env" ]] && echo 1 || echo 0)" "C3 환경변수가 �
 # ══════════════════════════════════════════════════════════════════
 # C4 — 버전 정본: XcodeGen 레포는 project.yml 을 읽는다
 # ══════════════════════════════════════════════════════════════════
+# pbxproj 가 아직 없는 상태(클린 체크아웃) — 정본에서 읽어야 한다
 ws=$(new_ws)
 printf 'targets:\n  App:\n    settings:\n      MARKETING_VERSION: "2.5.0"\n      CURRENT_PROJECT_VERSION: 42\n' > "$ws/project.yml"
-mkdir -p "$ws/App.xcodeproj"
-printf 'MARKETING_VERSION = 1.0.0;\nCURRENT_PROJECT_VERSION = 7;\n' > "$ws/App.xcodeproj/project.pbxproj"
-# pbxproj 를 더 새로 만들어 staleness 검사를 통과시킨다
-touch "$ws/App.xcodeproj/project.pbxproj"
 out="$(py "import store_common as s; from pathlib import Path
 r=Path('$ws'); print('|'.join(s.ios_version(r, r/'App.xcodeproj/project.pbxproj')))")"
 check "$(printf '%s' "$out" | grep -q '^2.5.0|42|project.yml' && echo 1 || echo 0)" \
-      "C4 project.yml 이 정본 — pbxproj 의 1.0.0 이 아니라 2.5.0 (실제: $out)"
+      "C4 pbxproj 부재 시 project.yml 이 정본 (실제: $out)"
+
+# pbxproj 가 있고 값이 같은 정상 상태 — 출처는 여전히 project.yml
+ws=$(new_ws)
+printf 'targets:\n  App:\n    settings:\n      MARKETING_VERSION: "2.5.0"\n      CURRENT_PROJECT_VERSION: 42\n' > "$ws/project.yml"
+mkdir -p "$ws/App.xcodeproj"
+printf 'MARKETING_VERSION = 2.5.0;\nCURRENT_PROJECT_VERSION = 42;\n' > "$ws/App.xcodeproj/project.pbxproj"
+out="$(py "import store_common as s; from pathlib import Path
+r=Path('$ws'); print('|'.join(s.ios_version(r, r/'App.xcodeproj/project.pbxproj')))")"
+check "$(printf '%s' "$out" | grep -q '^2.5.0|42|project.yml' && echo 1 || echo 0)" \
+      "C4 값이 같아도 출처는 project.yml (실제: $out)"
 
 # ══════════════════════════════════════════════════════════════════
-# C5 — pbxproj 가 project.yml 보다 오래되면 **중단한다**
-#      generate 안 한 상태로 올리면 옛 버전이 스토어에 올라간다
+# C5 — 버전이 **갈려 있으면** 중단한다
+#      generate 안 한 상태로 올리면 빌드는 성공하고 옛 버전이 올라간다
 # ══════════════════════════════════════════════════════════════════
 ws=$(new_ws)
 mkdir -p "$ws/App.xcodeproj"
 printf 'MARKETING_VERSION = 1.0.0;\n' > "$ws/App.xcodeproj/project.pbxproj"
-sleep 1
 printf 'targets:\n  App:\n    settings:\n      MARKETING_VERSION: "2.5.0"\n' > "$ws/project.yml"
 out="$(py "import store_common as s; from pathlib import Path
 r=Path('$ws'); s.ios_version(r, r/'App.xcodeproj/project.pbxproj')" ; echo "rc=$?")"
 check "$(printf '%s' "$out" | grep -q 'xcodegen generate' && echo 1 || echo 0)" \
-      "C5 pbxproj 가 오래되면 중단하고 generate 를 안내"
+      "C5 버전이 갈리면 중단하고 generate 를 안내"
 check "$(printf '%s' "$out" | grep -q 'rc=1' && echo 1 || echo 0)" "C5 종료 코드 1"
+check "$(printf '%s' "$out" | grep -q '2.5.0' && printf '%s' "$out" | grep -q '1.0.0' && echo 1 || echo 0)" \
+      "C5 두 값을 모두 보여준다 (무엇이 갈렸는지)"
+
+# ══════════════════════════════════════════════════════════════════
+# C5b — mtime 이 뒤집혀도 **버전이 같으면 통과한다**
+#       project.yml 을 버전과 무관한 이유로 고쳐도 막히면 안 된다.
+#       zen-koi 실측에서 오탐이 났던 경우다(서명 팀 설정 변경).
+# ══════════════════════════════════════════════════════════════════
+ws=$(new_ws)
+mkdir -p "$ws/App.xcodeproj"
+printf 'MARKETING_VERSION = 1.0.0;\nCURRENT_PROJECT_VERSION = 3;\n' > "$ws/App.xcodeproj/project.pbxproj"
+sleep 1
+printf 'targets:\n  App:\n    settings:\n      MARKETING_VERSION: "1.0.0"\n      CURRENT_PROJECT_VERSION: 3\n      DEVELOPMENT_TEAM: ABC123\n' > "$ws/project.yml"
+out="$(py "import store_common as s; from pathlib import Path
+r=Path('$ws'); print('|'.join(s.ios_version(r, r/'App.xcodeproj/project.pbxproj')))" ; echo "rc=$?")"
+check "$(printf '%s' "$out" | grep -q '^1.0.0|3|project.yml' && echo 1 || echo 0)" \
+      "C5b mtime 은 뒤집혔으나 버전이 같으면 통과 (실제: $(printf '%s' "$out" | head -1))"
+check "$(printf '%s' "$out" | grep -q 'rc=0' && echo 1 || echo 0)" "C5b 종료 코드 0"
 
 # ══════════════════════════════════════════════════════════════════
 # C6 — XcodeGen 을 안 쓰는 레포는 pbxproj 를 읽는다 (종전 동작)
@@ -174,6 +198,113 @@ r=Path('$ZK'); print(s.xcodegen_project(r))")"
 else
   ok "C9 SKIP — zen-koi 로컬에 없음"
 fi
+
+# ══════════════════════════════════════════════════════════════════
+# D1~ — 1·2순위가 둘 다 있을 때 조용히 고르지 않는다
+#       키스토어는 조용한 실패 비용이 가장 크다 (zen-koi, seq 113)
+# ══════════════════════════════════════════════════════════════════
+out="$(py 'import store_common as s
+r = s.KmsResult("duplicate_conflict", name="ANDROID_KEYSTORE_BASE64", service="pong",
+                tried="A@pong · B@pong", detail="서로 다른 값")
+print(r.handoff("keystore_conflict","kms"))')"
+check "$(printf '%s' "$out" | grep -q '^HANDOFF_DECISION=keystore_conflict$' && echo 1 || echo 0)" \
+      "D1 충돌은 DECISION 토큰 — 스킬이 선택지를 제시할 수 있다"
+check "$(printf '%s' "$out" | grep -q 'HANDOFF_REQUIRED' && echo 0 || echo 1)" \
+      "D1 충돌에 REQUIRED 를 쓰지 않는다"
+
+out="$(py 'import store_common as s
+r = s.KmsResult("not_found", name="X", service="devworld", tried="X@devworld")
+print(r.handoff("play_service_account","kms"))')"
+check "$(printf '%s' "$out" | grep -q '^HANDOFF_REQUIRED=play_service_account$' && echo 1 || echo 0)" \
+      "D1 그 밖의 실패는 REQUIRED 그대로"
+
+# ── 지문은 값을 노출하지 않고 같은지만 구별한다
+out="$(py 'import hashlib, json
+def fp(p): return hashlib.sha256(json.dumps(p,sort_keys=True,ensure_ascii=False).encode()).hexdigest()[:8]
+a={"private_key":"AAA","client_email":"x@y"}; b={"client_email":"x@y","private_key":"AAA"}; c={"private_key":"BBB"}
+print(fp(a)==fp(b), fp(a)==fp(c), len(fp(a)), "AAA" in fp(a))')"
+check "$([[ "$out" == "True False 8 False" ]] && echo 1 || echo 0)" \
+      "D2 지문 — 키 순서 무관·다른 값 구별·8자·원문 미포함 (실제: $out)"
+
+# ══════════════════════════════════════════════════════════════════
+# D2b — **실제 kms_fetch 경로**를 탄다. _curl 을 대체해 KMS 응답을 흉내낸다.
+#       앞의 D1·D2 는 handoff()·지문 함수만 보므로 조회 로직의 회귀를 못 잡는다.
+#       (변이 테스트에서 이 구멍이 드러났다)
+# ══════════════════════════════════════════════════════════════════
+fetch_case() {   # $1=1순위 값 $2=2순위 값 (빈 문자열이면 없음) → "status|duplicate|legacy"
+  FIRST="$1" SECOND="$2" PYTHONPATH="$MOD_DIR" python3 - <<'PYEOF' 2>&1
+import json, os, sys
+import store_common as s
+from pathlib import Path
+first, second = os.environ["FIRST"], os.environ["SECOND"]
+
+def fake_curl(args):
+    url = args[-1]
+    if url.endswith("/health"):
+        return (0, "{}")
+    if "secrets?q=" in url:
+        name = url.split("q=")[1].split("&")[0]
+        svc = "devworld" if name == "APPSTORE_API_KEY_JSON" else "pong"
+        val = first if name == "APPSTORE_API_KEY_JSON" else second
+        if not val:
+            return (0, json.dumps({"items": []}))
+        return (0, json.dumps({"items": [{"id": name, "name": name, "service": svc,
+                                          "environment": "prod", "has_value": True}]}))
+    if "/reveal" in url:
+        sid = url.split("/secrets/")[1].split("/reveal")[0]
+        val = first if sid == "APPSTORE_API_KEY_JSON" else second
+        return (0, json.dumps({"value": val}))
+    return (1, "")
+
+s._curl = fake_curl
+s.kms_token = lambda root: "tok"
+r = s.kms_fetch(Path("/tmp"), "pong", "APPSTORE_API_KEY_JSON")
+print(f"{r.status}|{r.duplicate}|{int(r.legacy)}")
+PYEOF
+}
+V1='{"key_id": "AAA"}'
+V2='{"key_id": "BBB"}'
+
+out="$(fetch_case "$V1" "")"
+check "$([[ "$out" == "ok||0" ]] && echo 1 || echo 0)" "D2b 1순위만 있으면 ok (실제: $out)"
+
+out="$(fetch_case "" "$V1")"
+check "$([[ "$out" == "ok||1" ]] && echo 1 || echo 0)" "D2b 2순위만 있으면 ok+legacy (실제: $out)"
+
+out="$(fetch_case "$V1" "$V1")"
+check "$([[ "$out" == "ok|identical|0" ]] && echo 1 || echo 0)" \
+      "D2b 값이 같으면 ok+duplicate=identical (실제: $out)"
+
+out="$(fetch_case "$V1" "$V2")"
+check "$([[ "$out" == "duplicate_conflict||0" ]] && echo 1 || echo 0)" \
+      "D2b 값이 다르면 **중단** — 조용히 1순위를 쓰지 않는다 (실제: $out)"
+
+out="$(fetch_case "" "")"
+check "$(printf '%s' "$out" | grep -q '^not_found' && echo 1 || echo 0)" \
+      "D2b 둘 다 없으면 not_found (실제: $out)"
+
+# ══════════════════════════════════════════════════════════════════
+# D3 — ExportOptions 는 destination=export 로 만든다
+#      upload 로 두면 내보내기와 업로드가 한 명령에 붙어 불가역 단계를 떼어낼 수 없다
+# ══════════════════════════════════════════════════════════════════
+ws=$(new_ws)
+out="$(py "import store_common as s; from pathlib import Path
+p = s.ensure_export_options(Path('$ws/ExportOptions.plist'), 'ABC123')
+print(p.read_text())")"
+check "$(printf '%s' "$out" | grep -q '<key>destination</key><string>export</string>' && echo 1 || echo 0)" \
+      "D3 destination=export (upload 아님)"
+check "$(printf '%s' "$out" | grep -q '<key>signingStyle</key><string>automatic</string>' && echo 1 || echo 0)" \
+      "D3 signingStyle=automatic (기존 두 레포와 일치)"
+check "$(printf '%s' "$out" | grep -q 'ABC123' && echo 1 || echo 0)" "D3 teamID 주입"
+
+# ── 있으면 덮어쓰지 않는다. 한 레포에 AppStore·TestFlight 용이 따로 있다
+ws=$(new_ws)
+printf 'EXISTING-DO-NOT-TOUCH\n' > "$ws/ExportOptions.plist"
+out="$(py "import store_common as s; from pathlib import Path
+p = s.ensure_export_options(Path('$ws/ExportOptions.plist'), 'ABC123')
+print(p.read_text().strip())")"
+check "$([[ "$out" == "EXISTING-DO-NOT-TOUCH" ]] && echo 1 || echo 0)" \
+      "D3 기존 파일을 덮어쓰지 않는다 (실제: $out)"
 
 echo "TESTS=$TOTAL PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" == "0" ]] && exit 0 || exit 1

@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -118,6 +119,8 @@ class KmsResult:
     service: str = ""    # 그때 쓴 service
     legacy: bool = False # 이관 전 형식으로 찾았는가
     tried: str = ""      # 시도한 (이름, service) 전부 — 사람이 범위 밖인지 판단하는 근거
+    duplicate: str = ""  # "" | identical — 1·2순위에 같은 값이 둘 다 있다
+    fingerprint: str = ""# 값의 SHA-256 앞 8자. 값 자체가 아니라 비교용이며 남겨도 안전하다
     detail: str = ""
 
     @property
@@ -133,9 +136,12 @@ class KmsResult:
         scope = f"kms:{self.status}"
         if self.tried:
             scope += f" ({self.tried})"
+        # 충돌은 사람이 **고를 수 있는** 상태다 — 스킬이 선택지를 제시해야 하므로 DECISION 이다.
+        # 그 밖의 실패는 스킬이 할 수 있는 것이 없으므로 REQUIRED 다(계약 v1).
+        token = "HANDOFF_DECISION" if self.status == "duplicate_conflict" else "HANDOFF_REQUIRED"
         return (
             "## ⏸️ 사람 확인 대기\n"
-            f"HANDOFF_REQUIRED={item}\n"
+            f"{token}={item}\n"
             f"HANDOFF_ACCESS={access}\n"
             f"HANDOFF_VERIFY={scope}\n\n"
             f"{self.detail}"
@@ -175,6 +181,13 @@ def kms_fetch(root: Path, slug: str, kind: str, env: str = "prod",
     cands = secret_candidates(slug, kind, org)
     tried = " · ".join(f"{n}@{svc}" for n, svc, _ in cands)
 
+    def _fp(payload: dict) -> str:
+        """값의 지문. 값 자체를 노출하지 않고 같은지만 비교한다."""
+        canon = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+        return hashlib.sha256(canon.encode("utf-8")).hexdigest()[:8]
+
+    found: list[tuple[str, str, bool, dict]] = []   # (name, service, legacy, value)
+
     for name, service, legacy in cands:
         rc, body = _curl([*hdr, f"{KMS_URL}/api/v1/secrets?q={name}&environment={env}"])
         if rc != 0:
@@ -212,8 +225,25 @@ def kms_fetch(root: Path, slug: str, kind: str, env: str = "prod",
         if missing:
             return KmsResult("no_value", name=name, service=service, tried=tried,
                              detail=f"필수 필드가 없습니다: {', '.join(missing)}")
+        found.append((name, service, legacy, payload))
+
+    # **1순위를 조용히 쓰지 않는다.** 둘 다 있으면 같은 값인지 확인한다.
+    # 키스토어가 이 흐름에서 조용한 실패 비용이 가장 크다 — 잘못된 키로 서명해 올리면
+    # 기존 등록의 서명과 달라지고 사후에 고칠 수 없는데, 업로드가 거부될 때까지 드러나지 않는다.
+    if found:
+        fps = {_fp(v) for _, _, _, v in found}
+        name, service, legacy, payload = found[0]
+        if len(found) > 1 and len(fps) > 1:
+            lines = "\n".join(f"  {n}@{s}  fingerprint={_fp(v)}" for n, s, _, v in found)
+            return KmsResult(
+                "duplicate_conflict", name=name, service=service, tried=tried,
+                fingerprint=_fp(payload),
+                detail=("같은 항목이 여러 곳에 **서로 다른 값**으로 있습니다. 추측하지 않고 멈춥니다.\n"
+                        f"{lines}\n"
+                        "어느 것이 정본인지 정하고 나머지를 지우거나 이관하세요."))
         return KmsResult("ok", value=payload, name=name, service=service,
-                         legacy=legacy, tried=tried)
+                         legacy=legacy, tried=tried, fingerprint=_fp(payload),
+                         duplicate=("identical" if len(found) > 1 else ""))
 
     first_name, first_svc, _ = cands[0]
     return KmsResult(
@@ -235,24 +265,38 @@ def xcodegen_project(root: Path) -> Path | None:
     return None
 
 
+def _pbx_value(pbxproj: Path, key: str) -> str:
+    if not pbxproj.is_file():
+        return ""
+    m = re.search(rf"{key} = ([^;]+);", pbxproj.read_text(encoding="utf-8", errors="replace"))
+    return m.group(1).strip().strip('"') if m else ""
+
+
 def ios_version(root: Path, pbxproj: Path) -> tuple[str, str, str]:
     """(MARKETING_VERSION, CURRENT_PROJECT_VERSION, 출처) 를 돌려준다.
 
     **XcodeGen 레포의 정본은 project.yml 이다.** pbxproj 는 생성물이라
     generate 를 안 한 상태면 옛 값이 나온다 — 빌드는 성공하고 스토어에
     잘못된 버전이 올라간다. 조용히 틀리는 지점이므로 정본을 먼저 본다.
+
+    **값을 비교한다. mtime 이 아니다.** mtime 으로 보면 project.yml 을 버전과
+    무관한 이유로 고쳐도(서명 팀 설정 등) 막힌다 — zen-koi 에서 실제로 오탐이 났다.
+    막아야 하는 것은 "generate 를 안 해서 **버전이 갈린** 상태" 뿐이다.
     """
     yml = xcodegen_project(root)
     if yml:
-        if pbxproj.is_file() and pbxproj.stat().st_mtime < yml.stat().st_mtime:
-            sys.exit(
-                f"❌ {pbxproj.name} 가 {yml.name} 보다 오래됐습니다.\n"
-                f"   `xcodegen generate` 를 먼저 실행하세요 — 지금 올리면 옛 버전이 업로드됩니다."
-            )
         text = yml.read_text(encoding="utf-8", errors="replace")
         mk = re.search(r"MARKETING_VERSION:\s*\"?([0-9][0-9.]*)\"?", text)
         bd = re.search(r"CURRENT_PROJECT_VERSION:\s*\"?([0-9]+)\"?", text)
         if mk:
+            stale = _pbx_value(pbxproj, "MARKETING_VERSION")
+            if stale and stale != mk.group(1):
+                sys.exit(
+                    f"❌ 버전이 갈려 있습니다 — {yml.name}={mk.group(1)} vs "
+                    f"{pbxproj.name}={stale}\n"
+                    f"   `xcodegen generate` 를 먼저 실행하세요. 지금 올리면 "
+                    f"빌드는 성공하고 옛 버전이 업로드됩니다."
+                )
             return mk.group(1), (bd.group(1) if bd else "1"), yml.name
 
     if not pbxproj.is_file():
@@ -291,9 +335,11 @@ EXPORT_OPTIONS_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0">
 <dict>
   <key>method</key><string>app-store-connect</string>
-  <key>destination</key><string>upload</string>
+  <key>destination</key><string>export</string>
   <key>teamID</key><string>{team_id}</string>
+  <key>signingStyle</key><string>automatic</string>
   <key>uploadSymbols</key><true/>
+  <key>stripSwiftSymbols</key><true/>
   <key>manageAppVersionAndBuildNumber</key><false/>
 </dict>
 </plist>
@@ -301,7 +347,14 @@ EXPORT_OPTIONS_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
 
 
 def ensure_export_options(path: Path, team_id: str) -> Path:
-    """ExportOptions plist 가 없으면 만든다. 레포마다 경로·이름이 다르고 아예 없기도 하다."""
+    """ExportOptions plist 가 없으면 만든다. 레포마다 경로·이름이 다르고 아예 없기도 하다.
+
+    **있으면 절대 덮어쓰지 않는다.** 한 레포에 AppStore·TestFlight 용이 따로 있고 내용이 다르다.
+
+    생성하는 값의 `destination` 은 `export` 다. `upload` 로 두면 `exportArchive` 가 그 자리에서
+    App Store Connect 로 올려 **내보내기와 업로드가 한 명령에 붙는다.** 업로드는 불가역이므로
+    별도 단계로 떼어 두어야 사람 확인을 붙일 자리가 생긴다(기존 두 레포도 `export` 다).
+    """
     if path.is_file():
         return path
     if not team_id:
