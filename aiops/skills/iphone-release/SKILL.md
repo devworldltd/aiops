@@ -52,8 +52,22 @@ CAPS=$(jq -r '.agent_hints.mobile.capabilities // {} | @json' .claude/config.jso
 | 상태 | 처리 |
 |---|---|
 | `agent_hints.mobile` 없음 | `/aiops:setup` 을 먼저 돌린다. 여기서 중단 |
-| `platform_signal` 이 `none (fallback)` | **감지가 아무것도 찾지 못했다.** 사람 확인을 받고 진행 |
+| `platform_signal` 이 `none (fallback)` | **감지가 돌았고 아무것도 못 찾았다.** 사람 확인을 받고 진행 |
+| `platform_signal` 이 `unknown` | **키 자체가 없다** — v1.16.1 이전 `/aiops:setup` 이 만든 config. 감지 실패가 아니라 **기록 부재**다. `/aiops:setup` 재실행으로 채워진다 |
 | `framework` 에 `ios-native` 없음 | 이 스킬 대상이 아니다 |
+
+> **세 상태를 구별한다.** `unknown` 은 감지가 실패한 것도 성공한 것도 아니고, **그 기능이
+> 생기기 전에 만들어진 설정**이다. 처방이 `none (fallback)` 과 다르다 — 사람 확인이 아니라
+> `/aiops:setup` 재실행이다(zen-koi #32).
+>
+> ```
+> apps/blog/wrangler.jsonc   신호로 판정
+> none (fallback)            감지가 돌았고 못 찾음
+> unknown                    필드가 생기기 전 config — 기록 자체가 없음
+> ```
+>
+> `HANDOFF_VERIFY` 에는 셋을 구별할 수 있게 적는다:
+> `platform=mobile signal=unknown (pre-v1.16.1 config)`
 
 ## §3 신규 출시와 업데이트 판정
 
@@ -81,7 +95,7 @@ brick-breaker 실측(2026-09-19)에서 막힌 것들이다.
 
 | 점검 | 방법 | 실패 시 |
 |---|---|---|
-| 개인정보처리방침 URL | `app.devworld.co.kr/<slug>/privacy` 가 200 | `HANDOFF_REQUIRED=privacy_policy_not_published` |
+| 개인정보처리방침 URL | §4-1 게이트 — **리다이렉트를 따라간** 최종 상태 | `HANDOFF_REQUIRED=privacy_policy_not_published` |
 | 앱 이름 가용성 | ASC API 조회 | `HANDOFF_DECISION=app_name_conflict` — **대안을 계산해 제시한다** |
 | 전화번호 형식 | `+82` 등 국가 코드 포함 | **입력 검증** — 자동 교정. 사람 영역이 아니다 |
 | 수출 규정 | `Info.plist` 에 `ITSAppUsesNonExemptEncryption=false` | 스킬이 추가 |
@@ -92,6 +106,24 @@ brick-breaker 실측(2026-09-19)에서 막힌 것들이다.
 
 **개인정보처리방침 URL 이 404 면 반려된다.** app-portal 배포가 스토어 등록보다 먼저다 —
 `/aiops:app-pages` 로 문서를 만들고 사람이 배포한 뒤에 여기로 온다.
+
+### §4-1 개인정보처리방침 점검 — 리다이렉트를 따라간다
+
+`android-release` §5-1 의 `release:privacy-check` 게이트를 그대로 쓴다. 판정도 같다.
+
+| 실제 상태 | 판정 |
+|---|---|
+| 307 → 200 | 통과. **최종 URL 을 보고에 남긴다** |
+| 200 | 통과 |
+| 404 · 5xx | `HANDOFF_REQUIRED=privacy_policy_not_published` |
+| 연결 실패 (`000`) | **검사 불가** — 통과도 실패도 아니다 |
+
+**`-L` 이 없으면 게시된 방침이 미게시로 판정된다.** app-portal 은 Cloudflare Workers 정적
+자산이라 트레일링 슬래시로 307 을 건다 — 실측(2026-09-20) privacy·terms·support 셋 다
+307 → 200 이다. `app-portal` 을 쓰는 **모든 앱**이 해당한다(zen-koi #31).
+
+`curl` 이 실패하면 `%{http_code}` 는 `000` 이다. 숫자 비교로만 짜면 "200 이 아니므로 미게시" 로
+떨어진다 — **네트워크가 막힌 것과 방침이 없는 것은 처방이 다르다.**
 
 **스크린샷 슬롯은 계정마다 다르다.** brick-breaker 계정은 6.5"(1284×2778)와 13"(2064×2752)를
 받고 6.9"(1320×2868)는 받지 않았다. **하드코딩하면 계정이 바뀔 때 깨진다.**

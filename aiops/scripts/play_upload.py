@@ -62,25 +62,52 @@ def detect_aab(root: Path, explicit: Path | None) -> Path:
     return root / "android/app/build/outputs/bundle/release/app-release.aab"
 
 
-def release_notes(portal: Path | None, slug: str, lang: str) -> str | None:
+def _targets_android(entry: dict) -> bool:
+    """이 릴리스가 Android 에 해당하는가.
+
+    `platforms` 는 `/aiops:app-pages` 가 정한 **플랫폼별 버전 dict** 이고 빈 객체 `{}` 도 유효하다.
+    `{}` 는 "안드로이드에 안 나갔다" 가 아니라 **플랫폼 구분을 적지 않았다**는 뜻이므로 해당으로 읽는다.
+    실측(2026-09-20): app-portal 8개 앱 중 7개가 `{}` 다. `{}` 를 제외로 읽으면 그 7개의 노트가
+    전부 빠진다(zen-koi 이슈 #33).
+
+    `{"android": null}` 은 다르다 — **명시적으로 안 나갔다**고 적은 것이다. 제외한다.
+    """
+    platforms = entry.get("platforms")
+    if not isinstance(platforms, dict) or not platforms:
+        return True                      # 키가 없거나 {} — 구분하지 않은 릴리스
+    return bool(platforms.get("android"))
+
+
+def release_notes(portal: Path | None, slug: str, lang: str) -> tuple[str | None, str]:
     """app-portal 의 content/<slug>/releases.json 최신 Android 릴리스에서 노트를 만든다.
 
     `/aiops:app-pages` 가 만드는 그 파일이다. 같은 정본을 쓴다.
+
+    **(노트, 사유) 를 돌려준다.** 노트를 못 만든 이유가 여럿이고 처방이 다르기 때문이다 —
+    "--portal 을 안 줬다" 와 "파일이 없다" 와 "Android 릴리스가 없다" 는 같은 결과가 아니다.
     """
     if not portal:
-        return None
+        return None, "no_portal"
     source = portal / f"content/{slug}/releases.json"
     if not source.is_file():
-        return None
-    doc = json.loads(source.read_text(encoding="utf-8"))
-    for entry in doc.get("releases", []):
-        if entry.get("platforms", {}).get("android"):
-            key = lang.split("-")[0]
-            picked = [c.get(lang) or c.get(key) or c.get("ko", "") for c in entry.get("changes", [])]
-            picked = [p for p in picked if p]
-            if picked:
-                return "\n".join(f"• {line}" for line in picked)
-    return None
+        return None, "no_file"
+    try:
+        doc = json.loads(source.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        return None, f"unreadable: {e}"
+    releases = doc.get("releases", [])
+    if not releases:
+        return None, "no_releases"
+    for entry in releases:
+        if not _targets_android(entry):
+            continue
+        key = lang.split("-")[0]
+        picked = [c.get(lang) or c.get(key) or c.get("ko", "") for c in entry.get("changes", [])]
+        picked = [p for p in picked if p]
+        if picked:
+            return "\n".join(f"• {line}" for line in picked), "ok"
+        return None, f"empty_changes: {entry.get('version', '?')}"
+    return None, "no_android_release"
 
 
 # --------------------------------------------------------------------------- 접근·업로드
@@ -164,11 +191,27 @@ def main() -> int:
           f"client_email={account.get('client_email', '?')})")
     print(f"✅ 대상: {package_name} / AAB {aab} ({aab.stat().st_size / 1_048_576:.1f} MB)")
 
-    notes = None if args.no_notes else release_notes(args.portal, args.slug, args.notes_lang)
-    if notes:
-        print(f"릴리즈 노트 ({args.notes_lang}):\n{notes}")
-    elif not args.no_notes:
-        print("ℹ️  릴리즈 노트 없음 — --portal 경로와 content/<slug>/releases.json 을 확인하세요.")
+    # **"노트를 넣지 않기로 한 것" 과 "넣으려 했는데 못 만든 것" 은 다르다.**
+    # 예전에는 둘 다 ℹ️ 한 줄에 종료코드도 그대로여서, 노트 없는 AAB 가 성공으로 올라갔다.
+    # Play 의 "새로운 기능" 이 비어 나가는 것은 업로드가 거부하지 않는다 — 막아 주는 것이 없다.
+    if args.no_notes:
+        notes = None
+        print("ℹ️  --no-notes — 릴리즈 노트 없이 진행합니다.")
+    else:
+        notes, why = release_notes(args.portal, args.slug, args.notes_lang)
+        if notes:
+            print(f"릴리즈 노트 ({args.notes_lang}):\n{notes}")
+        else:
+            hint = {
+                "no_portal": "--portal 을 주지 않았습니다. app-portal 경로가 필요합니다.",
+                "no_file": f"content/{args.slug}/releases.json 이 없습니다.",
+                "no_releases": "releases.json 에 릴리스가 없습니다.",
+                "no_android_release": "Android 에 해당하는 릴리스가 없습니다"
+                                      ' (platforms 에 {"android": null} 만 있습니까?).',
+            }.get(why, why)
+            print(f"❌ 릴리즈 노트를 만들지 못했습니다 — {hint}", file=sys.stderr)
+            print("   노트 없이 올리려면 --no-notes 를 **명시**하세요.", file=sys.stderr)
+            return 2
 
     if args.dry_run:
         verify_access(account, package_name)

@@ -44,8 +44,22 @@ SIGNAL=$(jq -r '.agent_hints.platform_signal // "unknown"' .claude/config.json 2
 | 상태 | 처리 |
 |---|---|
 | `agent_hints.mobile` 없음 | `/aiops:setup` 을 먼저 돌린다. 여기서 중단 |
-| `platform_signal` 이 `none (fallback)` | **감지가 아무것도 찾지 못했다.** 사람 확인 |
+| `platform_signal` 이 `none (fallback)` | **감지가 돌았고 아무것도 못 찾았다.** 사람이 platform 을 확인 |
+| `platform_signal` 이 `unknown` | **키 자체가 없다** — v1.16.1 이전 `/aiops:setup` 이 만든 config. 감지 실패가 아니라 **기록 부재**다. `/aiops:setup` 재실행으로 채워진다 |
 | `framework` 에 `android-native` 없음 | 이 스킬 대상이 아니다 |
+
+> **세 상태를 구별한다.** `unknown` 은 감지가 실패한 것도 성공한 것도 아니고, **그 기능이
+> 생기기 전에 만들어진 설정**이다. 처방이 `none (fallback)` 과 다르다 — 사람 확인이 아니라
+> `/aiops:setup` 재실행이다(zen-koi #32).
+>
+> ```
+> apps/blog/wrangler.jsonc   신호로 판정
+> none (fallback)            감지가 돌았고 못 찾음
+> unknown                    필드가 생기기 전 config — 기록 자체가 없음
+> ```
+>
+> `HANDOFF_VERIFY` 에는 셋을 구별할 수 있게 적는다:
+> `platform=mobile signal=unknown (pre-v1.16.1 config)`
 
 ## §3 자격증명 — 범위가 둘로 갈린다
 
@@ -202,7 +216,7 @@ Play Console 개발자 계정과 서비스 계정 존재를 확인한다.
 ## §4 신규 출시와 업데이트 판정
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/play_upload.py" --slug <slug> --root <root> --dry-run
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/play_upload.py" --slug <slug> --root <root> --portal <app-portal> --dry-run
 ```
 
 | 결과 | 판정 |
@@ -219,13 +233,17 @@ python3 "${CLAUDE_PLUGIN_ROOT}/scripts/play_upload.py" --slug <slug> --root <roo
 
 | 점검 | 방법 | 실패 시 |
 |---|---|---|
-| 개인정보처리방침 URL | `app.devworld.co.kr/<slug>/privacy` 가 200 | `HANDOFF_REQUIRED=privacy_policy_not_published` |
+| 개인정보처리방침 URL | §5-1 게이트 — **리다이렉트를 따라간** 최종 상태 | `HANDOFF_REQUIRED=privacy_policy_not_published` |
 | AAB 존재 | `build/outputs/bundle/release/*.aab` | `./gradlew bundleRelease` 안내 |
 | **AAB 서명** | §5-1 게이트 — `META-INF/*.RSA` | 중단. 업로드하지 않는다 |
 | 앱 이름 가용성 | Play Console 조회 | `HANDOFF_DECISION=app_name_conflict` |
 | 대상 연령층 | config 값 | `HANDOFF_DECISION=age_rating_decision` |
 | 가격·배포 국가 | config 값 | `HANDOFF_DECISION=price_and_territories` |
 | AdMob 유럽 규정 메시지 | 확인 불가 | `HANDOFF_REQUIRED=admob_eu_message` |
+
+**`--portal` 을 빠뜨리면 릴리즈 노트가 만들어지지 않는다.** `release_notes()` 가 즉시 빠져나가고,
+v1.20.0 까지는 그것이 `ℹ️` 한 줄로만 나와 **노트 없는 AAB 가 성공으로 올라갔다**(zen-koi #33).
+지금은 종료 코드 2 로 멈춘다 — 노트 없이 올리려면 `--no-notes` 를 **명시**해야 한다.
 
 **AdMob 유럽 규정 메시지가 없으면 릴리스 빌드에서 EEA 동의 폼이 뜨지 않는다.**
 콘솔에서만 만들 수 있어 이 스킬이 할 수 없다.
@@ -282,6 +300,52 @@ echo "✅ 서명 확인 (AAB 항목 $(printf '%s\n' "$_sig_list" | wc -l | tr -d
 > 서명 여부만 본다. **어느 키로 서명됐는지는 보지 않는다.** 그것은 Play 업로드가 거부로
 > 알려 주며, 여기서 판정하려면 업로드 키 인증서가 필요하다(§3-1).
 
+
+### §5-1 개인정보처리방침 점검 — 리다이렉트를 따라간다
+
+```bash
+# >>> release:privacy-check >>>
+# 개인정보처리방침 게시 점검. 종료 코드 0=게시됨 1=미게시 2=검사 불가.
+# **-L 이 없으면 게시된 방침이 미게시로 판정된다.** app-portal 은 Cloudflare Workers
+#   정적 자산이라 트레일링 슬래시로 307 을 건다 — 실측(2026-09-20) privacy·terms·support
+#   셋 다 307 → 200 이다. 200 만 보면 app-portal 을 쓰는 **모든 앱**이 걸린다(zen-koi #31).
+_PRIV_URL="${1:?사용: privacy-check <url>}"
+_PRIV_OUT=$(curl -sL --max-time 15 -o /dev/null -w '%{http_code} %{url_effective}' "$_PRIV_URL" 2>/dev/null)
+_PRIV_RC=$?
+_PRIV_CODE=${_PRIV_OUT%% *}
+_PRIV_FINAL=${_PRIV_OUT#* }
+
+# curl 이 실패하면 %{http_code} 는 000 이다. 숫자 비교로만 짜면 "200 이 아니므로 미게시" 로
+#   떨어진다 — **네트워크가 막힌 것과 방침이 없는 것은 처방이 다르다.**
+if [ "$_PRIV_RC" -ne 0 ] || [ "$_PRIV_CODE" = "000" ] || [ -z "$_PRIV_CODE" ]; then
+  echo "❌ 방침 URL 에 접근하지 못했습니다(curl rc=$_PRIV_RC code=${_PRIV_CODE:-없음}) — 게시 여부를 판정할 수 없습니다."
+  echo "   네트워크·DNS·프록시를 확인하세요. **미게시로 단정하지 않습니다.**"
+  exit 2
+fi
+
+case "$_PRIV_CODE" in
+  2??)
+    echo "✅ 방침 게시 확인 (HTTP $_PRIV_CODE)"
+    # 최종 URL 을 반드시 남긴다 — 도메인 오타·와일드카드 폴백이 엉뚱한 페이지로 리다이렉트돼
+    #   200 으로 통과하는 것을 사람이 볼 수 있어야 한다.
+    echo "   최종 URL: $_PRIV_FINAL"
+    [ "$_PRIV_FINAL" != "$_PRIV_URL" ] && echo "   (리다이렉트됨 — 요청: $_PRIV_URL)"
+    exit 0 ;;
+  *)
+    echo "❌ 방침이 게시되지 않았습니다 (HTTP $_PRIV_CODE, 최종 $_PRIV_FINAL)"
+    exit 1 ;;
+esac
+# <<< release:privacy-check <<<
+```
+
+| 실제 상태 | 판정 |
+|---|---|
+| 307 → 200 | 통과. **최종 URL 을 보고에 남긴다** |
+| 200 | 통과 |
+| 404 · 5xx | `HANDOFF_REQUIRED=privacy_policy_not_published` |
+| 연결 실패 (`000`) | **검사 불가** — 통과도 실패도 아니다 |
+
+
 ## §6 릴리즈 노트
 
 `app-portal` 의 `content/<slug>/releases.json` 에서 읽는다 — **`/aiops:app-pages` 가 만드는
@@ -294,8 +358,8 @@ echo "✅ 서명 확인 (AAB 항목 $(printf '%s\n' "$_sig_list" | wc -l | tr -d
 
 ```bash
 S="${CLAUDE_PLUGIN_ROOT}/scripts/play_upload.py"
-python3 "$S" --slug <slug> --root <root> --dry-run              # 되돌릴 수 있음
-python3 "$S" --slug <slug> --root <root> --track internal       # **트랙 반영. 되돌릴 수 없음**
+python3 "$S" --slug <slug> --root <root> --portal <app-portal> --dry-run         # 되돌릴 수 있음
+python3 "$S" --slug <slug> --root <root> --portal <app-portal> --track internal  # **트랙 반영. 되돌릴 수 없음**
 ```
 
 `commit` 전에 **사람 확인을 받는다.** `--track production` 은 즉시 사용자에게 나간다.
