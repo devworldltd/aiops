@@ -83,9 +83,34 @@ ANDROID_KEYSTORE_PASSWORD    service=pong   env=prod
 ANDROID_KEY_ALIAS            service=pong   env=prod
 ```
 
-**`play_service_account` 는 양쪽 토큰 모두 0건이다 — 실제 부재로 보인다.** zen-koi 토큰이 pong 의
-다른 스토어 자격증명은 전부 보는데 play 것만 없기 때문이다.
-`/aiops:android-release` 첫 실행은 `HANDOFF_REQUIRED=play_service_account` 로 멈춘다.
+**`play_service_account` 는 양쪽 토큰 모두 0건이다.** zen-koi 토큰이 pong 의 다른 스토어
+자격증명은 전부 보는데 play 것만 없다는 점에서 미등록이 유력하지만, **확정할 수 없다.**
+
+확인된 것은 **KMS 조회 0건뿐**이며, 이 절의 규칙대로 0건은 미등록과 권한 없음을 구별하지 못한다.
+게다가 검색한 이름은 `PLAY_SERVICE`·`PLAY` 두 가지뿐이라 `GOOGLE_PLAY_*` 같은 다른 이름이나
+다른 `service`·`environment` 로 등록돼 있을 가능성도 배제되지 않았다.
+
+Play 업로드의 자격증명은 **로그인이 아니라 Google Cloud 서비스 계정의 JSON 키**다. 따라서
+"로그인 안 됨" 이라는 상태는 이 경로에 없다. 빌 수 있는 단계는 넷이다.
+
+| 단계 | 상태 | 확인 결과 (2026-09-20, Chrome 브라우저로 실측) |
+|---|---|---|
+| 1 | Play Console 개발자 계정 | **있음** — 조직 계정 `데브월드`, 앱 5개 |
+| 2 | 서비스 계정 발급 + Play Console 권한 부여 | **있음** — `android-play-publisher@devworld-484016.iam.gserviceaccount.com`, 활성·만료일 없음. GCP 프로젝트 `devworld-484016` 에 키도 생성돼 있다(2026-09-06) |
+| 3 | 그 JSON 키를 KMS 에 등록 | **비어 있음** — 유일한 격차 |
+| 4 | 스킬이 조회 | 막힘 |
+
+**격차는 3단계 하나뿐이다.** 계정도 서비스 계정도 이미 있고 권한도 부여돼 있다.
+사람이 할 일은 "서비스 계정을 만들라" 가 아니라 **"이미 있는 키를 KMS 에 등록하라"** 다 —
+훨씬 작은 일이다.
+
+> **단, GCP 에 키가 있다고 JSON 파일을 가지고 있다는 뜻은 아니다.** 서비스 계정 키의 비공개
+> 부분은 생성 시점에 한 번만 내려받을 수 있다. 그때 저장하지 않았다면 새 키를 만들어야 한다.
+> 이것도 사람이 확인할 일이다.
+
+**동작에는 영향이 없다.** 어느 경우든 `not_found` 로 차단하고
+`HANDOFF_REQUIRED=play_service_account` 를 남긴다 — 사람이 1~3단계 중 어디가 비었는지 확인하게
+하는 것이 원래 의도다. `/aiops:android-release` 첫 실행은 여기서 멈추며,
 **HANDOFF 계약이 실제로 쓰이는 첫 사례가 될 예정이다.**
 
 조회 결과 해석은 다음 셋을 구별한다.
@@ -124,18 +149,47 @@ SECRET_NAME = ZEN_KOI_APPSTORE_API_KEY_JSON    하이픈 → 언더스코어, �
 | `brick-breaker` | `brick-breaker` | `BRICK_BREAKER_` |
 | `scanbarcode` | `scanbarcode` | `SCANBARCODE_` |
 
+### 항목마다 범위(scope)가 다르다
+
+**앱 단위인지 조직 단위인지를 항목이 선언한다.** 구별하지 않으면 조직 공용 자격증명을 앱
+`service` 로 찾다가 **값이 있는데 0건이 난다** — 범위 밖인 것과 없는 것이 같은 결과로 나온다.
+
+| 항목 | scope | 이유 |
+|---|---|---|
+| `android_keystore` 3종 | `app` | 앱마다 값이 다르다 |
+| `appstore_api_key` | `org` | 조직 공용. 앱마다 같다 |
+| `play_service_account` | `org` | 조직 공용 |
+
+조직 공용을 앱별로 두면 **키 교체 시 앱 수만큼 고쳐야 하고, 일부만 갱신돼 조용히 갈린다.**
+공용 항목에는 앱 접두사를 붙이지 않는다 — 구별할 대상이 없다.
+
+모르는 항목은 `app` 으로 본다. 조직 공용으로 잘못 넓히는 것보다 안전하다.
+
 ### 조회는 두 번 시도한다 — 기존 것을 깨지 않기 위해
 
-기존 무접두사 이름(`ANDROID_KEYSTORE_BASE64` 등)이 이미 등록돼 있다. 새 규칙으로만 찾으면
-pong 이 깨진다.
+```
+scope=app
+  1순위  <접두사><종류>  + service=<슬러그>    ZEN_KOI_ANDROID_KEYSTORE_BASE64 @ zen-koi
+  2순위  <종류>          + service=<슬러그>    ANDROID_KEYSTORE_BASE64         @ zen-koi
 
+scope=org
+  1순위  <종류>          + service=<조직>      APPSTORE_API_KEY_JSON           @ devworld
+  2순위  <접두사><종류>  + service=<슬러그>    PONG_APPSTORE_API_KEY_JSON      @ pong
 ```
-1순위  <접두사><종류>  + service=<슬러그>     예: ZEN_KOI_APPSTORE_API_KEY_JSON
-2순위  <종류>          + service=<슬러그>     예: ANDROID_KEYSTORE_BASE64
-```
+
+**`service` 를 아예 빼지 않는다.** 빼면 다른 앱의 동명 시크릿이 섞여 `ambiguous` 가 난다.
+scope 에 따라 **고정 대상만** 바뀐다.
+
+2순위로 찾았으면 `legacy=True` 로 표시해 보고에 남긴다 — 이관 전 상태이며 언젠가 옮겨야 한다.
+`PONG_APPSTORE_API_KEY_JSON` 이 정확히 그 상태다. **표시가 없으면 이관이 영원히 끝나지 않는다.**
 
 둘 다 0건이면 **미등록과 권한 없음을 구별할 수 없으므로 차단한다**(§2-3).
-2순위로 찾았으면 그 사실을 보고에 남긴다 — 옛 규칙으로 등록된 것이며 언젠가 옮겨야 한다.
+`HANDOFF_VERIFY` 에 **시도한 (이름, service) 전부**를 남긴다 — "못 찾았다" 를 받은 사람이
+범위 밖인지 진짜 없는지 스스로 판단할 수 있어야 한다.
+
+```
+HANDOFF_VERIFY=kms:not_found (APPSTORE_API_KEY_JSON@devworld · PONG_APPSTORE_API_KEY_JSON@pong)
+```
 
 **새로 등록하는 것은 1순위 형식만 쓴다.** 혼재를 늘리지 않는다.
 
@@ -184,6 +238,57 @@ zen-koi       : 없음
 
 레포의 `.envrc` 만 찾으면 못 찾는다. **상위로 거슬러 올라가는 탐색**이 필요하고, 못 찾으면
 "토큰 없음" 으로 중단한다(§2-3 표의 첫 행).
+
+## §2-6 계정 확인 폴백 — KMS 가 막혔을 때 브라우저로 본다
+
+§2-3 의 결론은 **KMS 0건이 미등록인지 권한 없음인지 구별하지 못한다**는 것이다. 그러면 스킬이
+사람에게 넘길 때 **무엇을 하라고 해야 할지도 모른다** — 계정을 만들라는 것인지, 키를 등록하라는
+것인지가 다르다.
+
+이 구별은 **스토어 콘솔에서만 확인된다.** API 자격증명이 없는 상태라 API 로는 볼 수 없다.
+그래서 KMS 조회가 `not_found` 일 때 **Chrome 브라우저 도구로 1·2단계를 확인한다.**
+
+### 왜 Chrome 인가
+
+플러그인 내장 브라우저는 사용자의 Chrome 과 분리돼 있어 Google 세션이 없다. Play Console 은
+마케팅 페이지로, GCP 콘솔은 로그인 화면으로 떨어진다.
+
+**Chrome 브라우저 도구는 사용자의 기존 로그인 세션을 쓴다.** 2026-09-20 실측에서 이 경로로
+1·2단계를 확인했다.
+
+### 절차
+
+| 단계 | URL | 무엇을 본다 |
+|---|---|---|
+| 1 | `play.google.com/console/developers` | 개발자 계정이 목록에 있는가 |
+| 2 | `…/developers/<id>/users-and-permissions` | `@….iam.gserviceaccount.com` 사용자가 있는가 |
+| 2' | `console.cloud.google.com/iam-admin/serviceaccounts?project=<프로젝트>` | 그 서비스 계정에 키가 생성돼 있는가 |
+
+`<id>` 는 1단계에서 개발자 계정을 선택하면 URL 에 나온다.
+
+### 지켜야 할 것
+
+- **읽기 전용이다.** 계정·키·권한을 만들거나 바꾸지 않는다. 키 생성은 사람이 한다
+- **로그인하지 않는다.** 세션이 없으면 거기서 멈추고 사람에게 알린다 — 자격증명 입력은 하지 않는다
+- **확인 결과를 마커에 담는다.** 아래 참조
+- 확인이 끝나면 **열었던 탭을 닫는다**
+
+### 확인 결과를 HANDOFF 에 담는다
+
+항목코드 하나로는 "계정이 없다" 와 "키를 KMS 에 안 넣었다" 가 같은 마커로 나온다. 받는 사람이
+할 일이 다른데도 구별되지 않는다. `HANDOFF_VERIFY` 에 **어느 단계까지 확인됐는지**를 담는다.
+
+```
+HANDOFF_REQUIRED=play_service_account
+HANDOFF_ACCESS=kms
+HANDOFF_VERIFY=console:account+sa+key / kms:0건
+```
+
+위 예는 **콘솔에서 계정·서비스 계정·키까지 확인됐고 KMS 등록만 비어 있다**는 뜻이다.
+사람은 "키를 KMS 에 등록하라" 만 하면 된다.
+
+브라우저 확인을 못 했으면 그 사실도 남긴다 — `console:unverified (no session)`.
+**확인하지 않은 것을 확인된 것처럼 적지 않는다.**
 
 ## §3 신규 출시와 업데이트 판정
 

@@ -665,8 +665,8 @@ Android 도 Gradle 을 쓰기 때문이다. 웹 신호는 다음 둘 중 하나�
 
 | 신호 | 근거 |
 |---|---|
-| **웹 프레임워크 의존성** | §7 의 식별자 — `hono`·`next`·`react`·`vue`·`svelte`·`astro`·`express`·`fastify`·`koa`·`@nestjs/core`·`@remix-run/*`·`nuxt` / `fastapi`·`django`·`flask`·`starlette`·`litestar` / `gin`·`echo`·`fiber` / `actix-web`·`axum`·`rocket` |
-| **웹 배포 매니페스트** | `wrangler.toml`·`wrangler.jsonc`·`vercel.json`·`netlify.toml`·`fly.toml`·`serverless.yml` (루트만) |
+| **웹 프레임워크 의존성** | §7 의 식별자 — `hono`·`next`·`react`·`vue`·`svelte`·`astro`·`express`·`fastify`·`koa`·`@nestjs/core`·`@remix-run/*`·`nuxt` / `fastapi`·`django`·`flask`·`starlette`·`litestar` / `gin`·`echo`·`fiber` / `actix-web`·`axum`·`rocket` / **`spring-boot`·`ktor`·`micronaut`·`quarkus`·`javalin`** |
+| **웹 배포 매니페스트** | `wrangler.toml`·`wrangler.jsonc`·`vercel.json`·`netlify.toml`·`fly.toml`·`serverless.yml` (깊이 3까지 — 모노레포는 `apps/*/` 아래에 있다) |
 
 `react` 는 `"react":` 로 키를 정확히 본다. `react-native` 에 `react` 가 부분 문자열로 들어 있어
 **앵커 없이 찾으면 RN 레포가 웹으로 잡힌다** — v1.11.0 의 `PASS_DRY_RUN` 과 같은 부류다.
@@ -689,9 +689,17 @@ done
 
 WEB_DETECTED=false; WEB_SIGNAL=""
 
-# (1) 웹 배포 매니페스트 — 루트만 본다
-for _m in wrangler.toml wrangler.jsonc vercel.json netlify.toml fly.toml serverless.yml; do
-  [ -f "$_m" ] && { WEB_DETECTED=true; WEB_SIGNAL="$_m"; break; }
+# (1) 웹 배포 매니페스트 — 모노레포는 apps/*/ 아래에 있다. 루트만 보면 놓친다.
+#     §15 가 모바일을 깊이 3·6 으로 보는 것과 균형을 맞춘다.
+_ps_find_any() {   # $1=maxdepth, $2..=-name 조건
+  local d="$1"; shift
+  find . -maxdepth "$d" \
+    \( -name node_modules -o -name .git -o -name build -o -name Pods -o -name DerivedData \) -prune -o \
+    \( "$@" \) -type f -print 2>/dev/null
+}
+for _m in $(_ps_find_any 3 -name 'wrangler.toml' -o -name 'wrangler.jsonc' -o -name 'vercel.json' \
+            -o -name 'netlify.toml' -o -name 'fly.toml' -o -name 'serverless.yml'); do
+  WEB_DETECTED=true; WEB_SIGNAL="${_m#./}"; break
 done
 
 # (2) 웹 프레임워크 의존성
@@ -711,6 +719,18 @@ if [ "$WEB_DETECTED" = "false" ]; then
     grep -qE '"react-native"[[:space:]]*:' "$_f" 2>/dev/null || _web_keys="$_web_keys|react"
     _hit="$(grep -oE "\"($_web_keys)\"[[:space:]]*:" "$_f" 2>/dev/null | head -1 | tr -d '":[:space:]')"
     [ -z "$_hit" ] && grep -qE '"@remix-run/' "$_f" 2>/dev/null && _hit="@remix-run"
+    if [ -n "$_hit" ]; then
+      WEB_DETECTED=true; WEB_SIGNAL="${_f#./}:$_hit"; break
+    fi
+  done
+fi
+
+if [ "$WEB_DETECTED" = "false" ]; then
+  # Java · Kotlin 웹 — **빌드 파일의 존재가 아니라 내용을 본다.**
+  # Gradle·Maven 자체는 웹 신호가 아니다(Android 도 쓴다). 웹 프레임워크 의존성이 있을 때만이다.
+  for _f in $(_ps_find 4 -name 'build.gradle' -o -name 'build.gradle.kts' -o -name 'pom.xml' \
+              -o -name 'libs.versions.toml'); do
+    _hit="$(grep -oiE '(spring-boot|io\.ktor|ktor-server|micronaut|quarkus|javalin)' "$_f" 2>/dev/null | head -1)"
     if [ -n "$_hit" ]; then
       WEB_DETECTED=true; WEB_SIGNAL="${_f#./}:$_hit"; break
     fi
@@ -834,6 +854,50 @@ platform=web  signal=none (fallback)               ← 기본값. 사람이 봐�
 
 `mobile.e2e_runner` 값: `maestro` (기본 고정, 후속 이슈 #150에서 사용).
 
+### 16-1. 판정 근거를 config 에 기록한다
+
+§16 은 `PLATFORM_SIGNAL` 을 **출력**한다. 출력만으로는 세션이 끝나면 근거가 사라지고, 나중에
+`agent_hints.platform` 만 보면 **신호로 판정된 것인지 기본값으로 떨어진 것인지 알 수 없다.**
+
+`platform` 옆에 근거를 함께 기록한다.
+
+```jsonc
+{
+  "agent_hints": {
+    "platform": "web",
+    "platform_signal": "apps/blog/wrangler.jsonc"   // 또는 "none (fallback)"
+  }
+}
+```
+
+**실행 순서 제약** — §13·§19 의 `agent_hints` 기입 뒤에 온다. §19 가 `.agent_hints` 를 통째로
+덮어쓰므로 그 앞에서 쓰면 지워진다(§20 과 같은 제약).
+
+```bash
+# >>> setup:platform-signal-write >>>
+# 선행: $PLATFORM·$PLATFORM_SIGNAL(§16), 헬퍼 _config_update(§5).
+# §13·§19 의 agent_hints 기입이 끝난 뒤에 실행한다.
+if command -v jq >/dev/null 2>&1; then
+  if _config_update '.agent_hints.platform = $p | .agent_hints.platform_signal = $s' \
+       --arg p "${PLATFORM:-web}" --arg s "${PLATFORM_SIGNAL:-unknown}"; then
+    echo "[setup] §16-1 platform=$PLATFORM signal=$PLATFORM_SIGNAL 기록 완료"
+  else
+    echo "[setup] §16-1 WARN: platform 기록 실패 — 위 오류를 확인하세요."
+  fi
+else
+  echo "[setup] §16-1 WARN: jq 미설치 — platform 기록 생략."
+fi
+# <<< setup:platform-signal-write <<<
+```
+
+앵커 문자열은 `aiops/tests/setup-platform-signals.test.sh` 의 추출 지점이므로 변경 금지.
+
+`platform_signal` 이 `none (fallback)` 이면 **감지가 아무것도 찾지 못한 상태**다. 그 config 를
+읽는 쪽(`/aiops:mobileflow` 진입 라우팅, `dev-mobile-*` 분기)은 값을 신뢰하기 전에 이 필드를 본다.
+
+§19 보존 목록에도 `agent_hints.platform_signal` 을 넣는다 — 재실행 시 감지 실패가 기존 근거를
+`unknown` 으로 덮지 않게 한다.
+
 ### 17. profile.yaml 작성 확장
 
 §12 의 신규 생성 포맷을 다음과 같이 확장한다. `platform` 필드는 항상 작성하며, `mobile:` 절은 `platform=mobile | both` 일 때만 작성한다.
@@ -943,6 +1007,7 @@ fi
 | `agent_hints` | dev-backend/dev-frontend/dev-mobile-* 등 에이전트가 동적 스택 적응에 사용 |
 | `agent_hints.mobile.framework` | /aiops:mobileflow 진입 라우팅 |
 | `agent_hints.mobile.capabilities` | §20 권한·SDK 감지 결과 — 법적 문서·광고 스킬의 근거 |
+| `agent_hints.platform_signal` | §16-1 판정 근거 — 신호 판정과 폴백을 구별한다 |
 | `agent_hints.backend.framework` | dev-backend 가이드 결정 |
 | `workspaces` | #167 모노레포 매핑 |
 | `profile` | #161 프로필 선택 |

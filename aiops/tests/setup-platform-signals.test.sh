@@ -14,6 +14,8 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 SETUP_SKILL="$REPO_ROOT/aiops/skills/setup/SKILL.md"
 SIG_ANCHOR="setup:platform-signals"
 DETECT_ANCHOR="setup:platform-detect"
+WRITE_ANCHOR="setup:platform-signal-write"
+UPDATE_ANCHOR="setup:config-update"
 
 TMPBASE="$(mktemp -d "${TMPDIR:-/tmp}/platform-signals-test.XXXXXX")"
 cleanup() { rm -rf "$TMPBASE"; }
@@ -31,11 +33,13 @@ extract_block() {
 
 SIG_CODE="$(extract_block "$SETUP_SKILL" "$SIG_ANCHOR")"
 DETECT_CODE="$(extract_block "$SETUP_SKILL" "$DETECT_ANCHOR")"
+WRITE_CODE="$(extract_block "$SETUP_SKILL" "$WRITE_ANCHOR")"
+UPDATE_CODE="$(extract_block "$SETUP_SKILL" "$UPDATE_ANCHOR")"
 if [[ -z "$SIG_CODE" || -z "$DETECT_CODE" ]]; then
   notok "앵커 추출 실패 — $SIG_ANCHOR / $DETECT_ANCHOR 확인 필요"
   echo "TESTS=$TOTAL PASS=$PASS FAIL=$FAIL"; exit 1
 fi
-export SIG_CODE DETECT_CODE
+export SIG_CODE DETECT_CODE WRITE_CODE UPDATE_CODE
 
 new_ws() { local ws="$TMPBASE/ws_$RANDOM$RANDOM"; mkdir -p "$ws"; echo "$ws"; }
 pkg()    { printf '%s\n' "$2" > "$1/package.json"; }
@@ -184,6 +188,82 @@ check "$([[ "$sig_web_fb" == "0" && "$CHAIN_FALLBACK" -ge 1 ]] && echo 1 || echo
 ws=$(new_ws); pkg "$ws" '{"dependencies":{"hono":"^4"}}'; run_chain "$ws"
 check "$(printf '%s' "$CHAIN_OUT" | grep -qE 'platform=web( |$)' && echo 1 || echo 0)" \
       "P4 'platform=<값>' 형식이 유지됨"
+
+# ══════════════════════════════════════════════════════════════════
+# W1~ — #27: 하위 배포 매니페스트와 Java 웹을 잡는다
+# ══════════════════════════════════════════════════════════════════
+ws=$(new_ws); mkdir -p "$ws/apps/api"; : > "$ws/apps/api/wrangler.toml"
+run_sig "$ws"
+check "$([[ "$SIG_WEB" == "true" ]] && echo 1 || echo 0)" \
+      "W1 apps/*/wrangler.toml → web=true (모노레포, #27)"
+check "$(printf '%s' "$SIG_WSIG" | grep -q 'apps/api/wrangler.toml' && echo 1 || echo 0)" \
+      "W1 근거에 하위 경로 (실제: $SIG_WSIG)"
+
+ws=$(new_ws); mkdir -p "$ws/server"
+printf 'implementation("org.springframework.boot:spring-boot-starter-web")\n' > "$ws/server/build.gradle.kts"
+run_sig "$ws"
+check "$([[ "$SIG_WEB" == "true" ]] && echo 1 || echo 0)" "W1 Spring Boot → web=true (#27)"
+
+ws=$(new_ws); mkdir -p "$ws/api"
+printf 'implementation("io.ktor:ktor-server-core:2.3.0")\n' > "$ws/api/build.gradle.kts"
+run_sig "$ws"
+check "$([[ "$SIG_WEB" == "true" ]] && echo 1 || echo 0)" "W1 Ktor → web=true"
+
+# ── 회귀 방지: Gradle 단독은 여전히 웹이 아니다.
+#    내용을 보는 것이지 빌드 파일의 존재를 보는 것이 아니다.
+ws=$(new_ws); mkdir -p "$ws/android/app"; : > "$ws/android/app/build.gradle.kts"
+run_sig "$ws" ANDROID_DETECTED=true
+check "$([[ "$SIG_WEB" == "false" ]] && echo 1 || echo 0)" \
+      "W1 Android Gradle 단독 → web=false (회귀 방지)"
+
+ws=$(new_ws); mkdir -p "$ws/android/app"
+printf 'implementation("com.google.android.gms:play-services-ads:23.0.0")\n' > "$ws/android/app/build.gradle.kts"
+run_sig "$ws" ANDROID_DETECTED=true
+check "$([[ "$SIG_WEB" == "false" ]] && echo 1 || echo 0)" \
+      "W1 Android 의존성이 있어도 web=false"
+
+# ══════════════════════════════════════════════════════════════════
+# W2~ — #28: 판정 근거를 config 에 기록한다
+# ══════════════════════════════════════════════════════════════════
+run_write() {   # $1=ws, 나머지=env
+  local ws="$1"; shift
+  WRITE_OUT="$(env "$@" bash -c 'cd "$1" && eval "$SIG_CODE
+$DETECT_CODE
+$UPDATE_CODE
+$WRITE_CODE"' _ "$ws" 2>&1)"
+}
+cfg() { jq -r "$2" "$1/.claude/config.json" 2>/dev/null; }
+seed() { mkdir -p "$1/.claude"; printf '%s\n' "$2" > "$1/.claude/config.json"; }
+
+if ! command -v jq >/dev/null 2>&1; then
+  notok "SKIP: jq 미설치 — 기록 테스트를 실행할 수 없습니다"
+else
+
+ws=$(new_ws); seed "$ws" '{"agent_hints":{"backend":{"framework":"hono"}}}'
+mkdir -p "$ws/apps/blog"; : > "$ws/apps/blog/wrangler.jsonc"
+run_write "$ws"
+check "$([[ "$(cfg "$ws" '.agent_hints.platform')" == "web" ]] && echo 1 || echo 0)" \
+      "W2 platform 이 config 에 기록됨"
+check "$(cfg "$ws" '.agent_hints.platform_signal' | grep -q 'apps/blog/wrangler.jsonc' && echo 1 || echo 0)" \
+      "W2 platform_signal 이 config 에 기록됨 (#28 의 핵심)"
+check "$([[ "$(cfg "$ws" '.agent_hints.backend.framework')" == "hono" ]] && echo 1 || echo 0)" \
+      "W2 기존 agent_hints 보존"
+
+# ── 폴백도 기록된다. 이 구별이 #28 의 요구다
+ws=$(new_ws); seed "$ws" '{"agent_hints":{}}'
+run_write "$ws"
+check "$([[ "$(cfg "$ws" '.agent_hints.platform_signal')" == "none (fallback)" ]] && echo 1 || echo 0)" \
+      "W3 폴백이 config 에 그대로 기록됨 (실제: $(cfg "$ws" '.agent_hints.platform_signal'))"
+
+# ── 신호 판정과 폴백이 config 에서 구별된다
+ws=$(new_ws); seed "$ws" '{"agent_hints":{}}'; pkg "$ws" '{"dependencies":{"hono":"^4"}}'
+run_write "$ws"; sig_recorded="$(cfg "$ws" '.agent_hints.platform_signal')"
+ws=$(new_ws); seed "$ws" '{"agent_hints":{}}'
+run_write "$ws"; fb_recorded="$(cfg "$ws" '.agent_hints.platform_signal')"
+check "$([[ "$sig_recorded" != "$fb_recorded" ]] && echo 1 || echo 0)" \
+      "W3 config 에서 신호 판정과 폴백이 구별된다 ($sig_recorded vs $fb_recorded)"
+
+fi
 
 echo "TESTS=$TOTAL PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" == "0" ]] && exit 0 || exit 1

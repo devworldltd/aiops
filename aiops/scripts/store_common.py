@@ -35,13 +35,43 @@ def secret_prefix(slug: str) -> str:
     return re.sub(r"[^A-Za-z0-9]+", "_", slug).strip("_").upper() + "_"
 
 
-def secret_candidates(slug: str, kind: str) -> list[str]:
-    """조회 순서. 1순위 접두사 형식, 2순위 기존 무접두사.
+# 항목마다 앱 단위인지 조직 단위인지가 다르다. 이것을 구별하지 않으면
+# 조직 단위 자격증명을 앱 service 로 찾다가 **값이 있는데 not_found 가 난다.**
+# 범위 밖인 것과 없는 것이 같은 결과로 나오는 것 — 이 모듈이 없애려는 바로 그 실패다.
+#
+#   app  앱마다 값이 다르다. service=<앱슬러그>
+#   org  조직 공용이라 앱마다 같다. service=<조직>. 앱 접두사를 붙이지 않는다
+#        (구별할 대상이 없다). 키 교체 시 한 곳만 고치면 된다.
+SECRET_SCOPE = {
+    "ANDROID_KEYSTORE_BASE64":    "app",
+    "ANDROID_KEYSTORE_PASSWORD":  "app",
+    "ANDROID_KEY_ALIAS":          "app",
+    "APPSTORE_API_KEY_JSON":      "org",
+    "PLAY_SERVICE_ACCOUNT_JSON":  "org",
+}
 
-    새 규칙으로만 찾으면 이미 등록된 무접두사 시크릿(ANDROID_KEYSTORE_BASE64 등)이
-    깨진다. 2순위로 찾았으면 호출 측이 보고에 남긴다 — 옛 규칙이며 언젠가 옮겨야 한다.
+DEFAULT_ORG = "devworld"
+
+
+def secret_scope(kind: str) -> str:
+    """모르는 항목은 app 으로 본다 — 조직 공용으로 잘못 넓히는 것보다 안전하다."""
+    return SECRET_SCOPE.get(kind, "app")
+
+
+def secret_candidates(slug: str, kind: str, org: str = DEFAULT_ORG) -> list[tuple[str, str, bool]]:
+    """조회 순서를 (이름, service, legacy) 로 돌려준다.
+
+    **service 를 빼지 않는다.** 빼면 다른 앱의 동명 시크릿이 섞여 ambiguous 가 난다.
+    scope 에 따라 고정 대상만 바뀐다.
+
+    legacy=True 로 찾았으면 호출 측이 보고에 남긴다 — 옛 규칙이며 언젠가 옮겨야 한다.
+    표시가 없으면 이관이 영원히 끝나지 않는다.
     """
-    return [secret_prefix(slug) + kind, kind]
+    pref = secret_prefix(slug) + kind
+    if secret_scope(kind) == "org":
+        # 공용이 정답. 앱 접두사 + 앱 service 는 이관 전 상태다(PONG_APPSTORE_API_KEY_JSON).
+        return [(kind, org, False), (pref, slug, True)]
+    return [(pref, slug, False), (kind, slug, True)]
 
 
 # --------------------------------------------------------------------------- KMS_TOKEN 탐색
@@ -84,8 +114,10 @@ class KmsResult:
     """조회 결과. status 로 세 상태를 구별한다 — 이 구별이 이 모듈의 핵심이다."""
     status: str          # ok | token_missing | not_found | fetch_failed | ambiguous | no_value
     value: dict | None = None
-    name: str = ""       # 실제로 찾은 이름
-    legacy: bool = False # 2순위(무접두사)로 찾았는가
+    name: str = ""       # 실제로 찾은(또는 1순위) 이름
+    service: str = ""    # 그때 쓴 service
+    legacy: bool = False # 이관 전 형식으로 찾았는가
+    tried: str = ""      # 시도한 (이름, service) 전부 — 사람이 범위 밖인지 판단하는 근거
     detail: str = ""
 
     @property
@@ -93,12 +125,19 @@ class KmsResult:
         return self.status == "ok"
 
     def handoff(self, item: str, access: str) -> str:
-        """HANDOFF 마커 본문. docs/contracts/handoff-marker.md 규약을 따른다."""
+        """HANDOFF 마커 본문. docs/contracts/handoff-marker.md 규약을 따른다.
+
+        VERIFY 에 **조회 범위**를 담는다. "못 찾았다" 를 받은 사람이 범위 밖인지
+        진짜 없는지를 스스로 판단할 수 있어야 한다.
+        """
+        scope = f"kms:{self.status}"
+        if self.tried:
+            scope += f" ({self.tried})"
         return (
             "## ⏸️ 사람 확인 대기\n"
             f"HANDOFF_REQUIRED={item}\n"
             f"HANDOFF_ACCESS={access}\n"
-            f"HANDOFF_VERIFY=kms:{self.name or item}\n\n"
+            f"HANDOFF_VERIFY={scope}\n\n"
             f"{self.detail}"
         )
 
@@ -117,7 +156,7 @@ def _curl(args: list[str]) -> tuple[int, str]:
 
 
 def kms_fetch(root: Path, slug: str, kind: str, env: str = "prod",
-              required: tuple[str, ...] = ()) -> KmsResult:
+              required: tuple[str, ...] = (), org: str = DEFAULT_ORG) -> KmsResult:
     """시크릿을 조회한다. 값은 반환만 하고 절대 출력하지 않는다.
 
     **0건은 '미등록' 이 아니다.** 권한 없는 토큰도 HTTP 200 에 빈 items 로 온다.
@@ -133,43 +172,57 @@ def kms_fetch(root: Path, slug: str, kind: str, env: str = "prod",
     if rc != 0:
         return KmsResult("fetch_failed", detail=f"KMS 응답 없음: {KMS_URL} (curl rc={rc})")
 
-    for idx, name in enumerate(secret_candidates(slug, kind)):
+    cands = secret_candidates(slug, kind, org)
+    tried = " · ".join(f"{n}@{svc}" for n, svc, _ in cands)
+
+    for name, service, legacy in cands:
         rc, body = _curl([*hdr, f"{KMS_URL}/api/v1/secrets?q={name}&environment={env}"])
         if rc != 0:
-            return KmsResult("fetch_failed", name=name, detail=f"조회 실패 (curl rc={rc})")
+            return KmsResult("fetch_failed", name=name, service=service, tried=tried,
+                             detail=f"조회 실패 (curl rc={rc})")
         try:
             items = json.loads(body or '{"items": []}').get("items", [])
         except json.JSONDecodeError:
-            return KmsResult("fetch_failed", name=name, detail="응답이 JSON 이 아닙니다.")
+            return KmsResult("fetch_failed", name=name, service=service, tried=tried,
+                             detail="응답이 JSON 이 아닙니다.")
+        # service 를 빼지 않는다 — 빼면 다른 앱의 동명 시크릿이 섞여 ambiguous 가 난다.
         hits = [i for i in items
-                if i.get("name") == name and i.get("service") == slug and i.get("environment") == env]
+                if i.get("name") == name and i.get("service") == service
+                and i.get("environment") == env]
         if not hits:
             continue
         if len(hits) > 1:
-            return KmsResult("ambiguous", name=name,
+            return KmsResult("ambiguous", name=name, service=service, tried=tried,
                              detail=f"같은 이름이 여러 건입니다: {[h.get('id') for h in hits]}")
         sec = hits[0]
         if not sec.get("has_value"):
-            return KmsResult("no_value", name=name, detail=f"값이 등록돼 있지 않습니다 (id={sec.get('id')}).")
+            return KmsResult("no_value", name=name, service=service, tried=tried,
+                             detail=f"값이 등록돼 있지 않습니다 (id={sec.get('id')}).")
 
         rc, revealed = _curl([*hdr, "-X", "POST", f"{KMS_URL}/api/v1/secrets/{sec['id']}/reveal"])
         if rc != 0 or not revealed:
-            return KmsResult("fetch_failed", name=name, detail="reveal 실패")
+            return KmsResult("fetch_failed", name=name, service=service, tried=tried,
+                             detail="reveal 실패")
         try:
             payload = json.loads(json.loads(revealed).get("value"))
         except (TypeError, json.JSONDecodeError):
-            return KmsResult("no_value", name=name, detail="값이 올바른 JSON 이 아닙니다.")
+            return KmsResult("no_value", name=name, service=service, tried=tried,
+                             detail="값이 올바른 JSON 이 아닙니다.")
         missing = [k for k in required if not payload.get(k)]
         if missing:
-            return KmsResult("no_value", name=name,
+            return KmsResult("no_value", name=name, service=service, tried=tried,
                              detail=f"필수 필드가 없습니다: {', '.join(missing)}")
-        return KmsResult("ok", value=payload, name=name, legacy=(idx > 0))
+        return KmsResult("ok", value=payload, name=name, service=service,
+                         legacy=legacy, tried=tried)
 
-    tried = " · ".join(secret_candidates(slug, kind))
+    first_name, first_svc, _ = cands[0]
     return KmsResult(
-        "not_found", name=secret_candidates(slug, kind)[0],
-        detail=(f"조회 0건 (service={slug}, environment={env}). 시도한 이름: {tried}\n"
-                "0건은 미등록과 권한 없음을 구별하지 못합니다 — 토큰 스코프도 함께 확인하세요."))
+        "not_found", name=first_name, service=first_svc, tried=tried,
+        detail=(f"조회 0건 (scope={secret_scope(kind)}, environment={env}).\n"
+                f"시도: {tried}\n"
+                "0건은 미등록과 권한 없음을 구별하지 못합니다 — 토큰 스코프도 함께 확인하세요.\n"
+                "조회 범위가 맞는지도 확인하세요 — 조직 공용 항목을 앱 service 로 찾으면 "
+                "값이 있어도 0건이 납니다."))
 
 
 # --------------------------------------------------------------------------- iOS 프로젝트

@@ -39,11 +39,44 @@ out="$(py 'import store_common as s; print(s.secret_prefix("pong"))')"
 check "$([[ "$out" == "PONG_" ]] && echo 1 || echo 0)" "C1 pong → PONG_"
 
 # ══════════════════════════════════════════════════════════════════
-# C2 — 조회는 2단. 1순위 접두사, 2순위 무접두사 (기존 것을 깨지 않는다)
+# C2 — scope=app: 1순위 접두사, 2순위 무접두사. 둘 다 service=<앱슬러그>
 # ══════════════════════════════════════════════════════════════════
-out="$(py 'import store_common as s; print("|".join(s.secret_candidates("pong","ANDROID_KEYSTORE_BASE64")))')"
-check "$([[ "$out" == "PONG_ANDROID_KEYSTORE_BASE64|ANDROID_KEYSTORE_BASE64" ]] && echo 1 || echo 0)" \
-      "C2 1순위 접두사 · 2순위 무접두사 (실제: $out)"
+out="$(py 'import store_common as s
+print("|".join(f"{n}@{v}:{int(l)}" for n,v,l in s.secret_candidates("pong","ANDROID_KEYSTORE_BASE64")))')"
+check "$([[ "$out" == "PONG_ANDROID_KEYSTORE_BASE64@pong:0|ANDROID_KEYSTORE_BASE64@pong:1" ]] && echo 1 || echo 0)" \
+      "C2 app 범위 — 둘 다 service=pong (실제: $out)"
+
+# ══════════════════════════════════════════════════════════════════
+# C2b — scope=org: 조직 공용이 1순위. **service 가 조직으로 바뀐다**
+#       이게 없으면 값이 등록돼 있는데 not_found 가 난다 (zen-koi #29)
+# ══════════════════════════════════════════════════════════════════
+out="$(py 'import store_common as s
+print("|".join(f"{n}@{v}:{int(l)}" for n,v,l in s.secret_candidates("pong","APPSTORE_API_KEY_JSON")))')"
+check "$([[ "$out" == "APPSTORE_API_KEY_JSON@devworld:0|PONG_APPSTORE_API_KEY_JSON@pong:1" ]] && echo 1 || echo 0)" \
+      "C2b org 범위 — 1순위 service=devworld, 2순위는 이관 전 형식 (실제: $out)"
+
+out="$(py 'import store_common as s
+print("|".join(f"{n}@{v}" for n,v,_ in s.secret_candidates("zen-koi","PLAY_SERVICE_ACCOUNT_JSON")))')"
+check "$([[ "$out" == "PLAY_SERVICE_ACCOUNT_JSON@devworld|ZEN_KOI_PLAY_SERVICE_ACCOUNT_JSON@zen-koi" ]] && echo 1 || echo 0)" \
+      "C2b play 서비스 계정도 org (실제: $out)"
+
+# ══════════════════════════════════════════════════════════════════
+# C2c — scope 판정. 모르는 항목은 app (조직으로 잘못 넓히지 않는다)
+# ══════════════════════════════════════════════════════════════════
+out="$(py 'import store_common as s
+print(",".join(s.secret_scope(k) for k in
+  ["ANDROID_KEYSTORE_BASE64","ANDROID_KEY_ALIAS","APPSTORE_API_KEY_JSON","PLAY_SERVICE_ACCOUNT_JSON","UNKNOWN_KIND"]))')"
+check "$([[ "$out" == "app,app,org,org,app" ]] && echo 1 || echo 0)" \
+      "C2c 키스토어=app · API키/서비스계정=org · 미지=app (실제: $out)"
+
+# ══════════════════════════════════════════════════════════════════
+# C2d — service 를 빼지 않는다. 모든 후보에 service 가 있다
+#       빼면 다른 앱의 동명 시크릿이 섞여 ambiguous 가 난다
+# ══════════════════════════════════════════════════════════════════
+out="$(py 'import store_common as s
+bad=[c for k in s.SECRET_SCOPE for c in s.secret_candidates("zen-koi",k) if not c[1]]
+print("EMPTY" if bad else "ALL_SET")')"
+check "$([[ "$out" == "ALL_SET" ]] && echo 1 || echo 0)" "C2d 모든 후보에 service 가 있다"
 
 # ══════════════════════════════════════════════════════════════════
 # C3 — KMS_TOKEN 상위 폴더 탐색 (zen-koi 실측 구조)
@@ -114,11 +147,20 @@ check "$(printf '%s' "$out" | grep -c 'False' | grep -q '^5$' && echo 1 || echo 
 # C8 — HANDOFF 마커가 계약 형식을 따른다
 # ══════════════════════════════════════════════════════════════════
 out="$(py 'import store_common as s
-r=s.KmsResult("not_found", name="ZEN_KOI_APPSTORE_API_KEY_JSON", detail="조회 0건")
-print(r.handoff("appstore_api_key","appstore_account"))')"
+r=s.KmsResult("not_found", name="APPSTORE_API_KEY_JSON", service="devworld",
+              tried="APPSTORE_API_KEY_JSON@devworld · PONG_APPSTORE_API_KEY_JSON@pong",
+              detail="조회 0건")
+print(r.handoff("appstore_api_key","kms"))')"
 check "$(printf '%s' "$out" | grep -q '^## ⏸️ 사람 확인 대기$' && echo 1 || echo 0)" "C8 헤더가 계약과 일치"
 check "$(printf '%s' "$out" | grep -q '^HANDOFF_REQUIRED=appstore_api_key$' && echo 1 || echo 0)" "C8 REQUIRED 토큰"
-check "$(printf '%s' "$out" | grep -q '^HANDOFF_ACCESS=appstore_account$' && echo 1 || echo 0)" "C8 ACCESS 토큰"
+check "$(printf '%s' "$out" | grep -q '^HANDOFF_ACCESS=kms$' && echo 1 || echo 0)" "C8 ACCESS 토큰"
+
+# VERIFY 에 조회 범위가 담겨야 한다 — "못 찾았다" 를 받은 사람이
+# 범위 밖인지 진짜 없는지를 스스로 판단할 수 있어야 한다 (zen-koi #29)
+check "$(printf '%s' "$out" | grep -q 'HANDOFF_VERIFY=.*@devworld' && echo 1 || echo 0)" \
+      "C8 VERIFY 에 조회한 service 가 담긴다"
+check "$(printf '%s' "$out" | grep -q 'HANDOFF_VERIFY=.*@pong' && echo 1 || echo 0)" \
+      "C8 VERIFY 에 2순위(이관 전)도 담긴다"
 
 # ══════════════════════════════════════════════════════════════════
 # C9 — 실측: zen-koi 의 버전 정본이 project.yml 로 읽힌다
