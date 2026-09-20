@@ -97,6 +97,79 @@ if [[ "$MODE" == publish ]]; then
   fi
 fi
 
+# >>> release:notify-gate >>>
+# ── 마커·출력 토큰 통지 게이트 (aiops-codex 계약 #1) ─────────────────
+# 판정: 통과 / 통지 필요(중단) / **대조 불가(중단)**.
+#
+# 왜 스크립트인가: v1.18.0 이 HANDOFF 값 10개를 통지 없이 내보냈다. 계약은 이미
+#   발효돼 있었고 깨진 것도 없었다 — 다만 **사람이 재대조할 때까지 아무도 몰랐다.**
+#   기억해야 하는 절차는 또 빠진다. 그래서 릴리스를 막는다.
+#
+# **"대조하지 못했다" 를 "변화 없음" 으로 읽지 않는다.** 이 레포가 게이트마다 지키는
+#   규약이고(app-ads 광고 ID · android-release 서명 · merge-main 조회 실패),
+#   통지 게이트가 그 규약을 어기면 게이트가 없는 것과 같다.
+
+# 이모지 선두 헤더만 고른다. 한글도 `§` 도 비ASCII 라서 "비ASCII" 로 잡으면
+#   절 제목 수백 개가 섞인다(실측: 38종이어야 할 것이 379종).
+_REL_EMOJI_PAT=$'^#{2,3} (\xf0|\xe2[\x8c-\xaf])[^|`]*$'
+_REL_TOKEN_PAT='(HANDOFF_[A-Z]+=[a-z_]+|E2E_RESULT=[A-Z_]+|E2E_ENV_ERROR)'
+
+_rel_tokens()  { LC_ALL=C git grep -h -oE "$_REL_TOKEN_PAT" "$1" -- aiops/skills aiops/agents 2>/dev/null | LC_ALL=C sort -u; }
+_rel_headers() { LC_ALL=C git grep -h -oE "$_REL_EMOJI_PAT" "$1" -- aiops/skills aiops/agents 2>/dev/null \
+                   | sed 's/[[:space:]]*$//' | LC_ALL=C sort -u; }
+
+if [[ "$MODE" == publish ]]; then
+  echo "── 통지 게이트: --publish-only 는 새 내용이 없어 건너뜁니다 ──"
+elif [[ "${NOTIFY_GATE:-}" == "off" ]]; then
+  echo "  ⚠️ 통지 게이트를 껐습니다(NOTIFY_GATE=off) — 마커 변화는 **미확인**입니다."
+  echo "     '변화 없음' 이 아닙니다. 확인하지 않았다는 뜻입니다."
+elif [[ -z "$PREV" ]]; then
+  echo "  ❌ 직전 태그가 없어 마커 변화를 대조하지 못했습니다(대조 불가)." >&2
+  echo "     첫 릴리스라면 NOTIFY_GATE=off 로 진행하세요 — 그때도 '변화 없음' 은 아닙니다." >&2
+  exit 2
+else
+  _P_TOK=$(_rel_tokens "$PREV");   _C_TOK=$(_rel_tokens "$TARGET")
+  _P_HDR=$(_rel_headers "$PREV");  _C_HDR=$(_rel_headers "$TARGET")
+
+  # 현재 트리에서 하나도 못 찾으면 추출이 깨진 것이다. 그것을 "변화 없음" 으로 읽으면
+  #   게이트가 조용히 사라진다 — 빈 결과와 통과는 다르다.
+  if [[ -z "$_C_TOK" || -z "$_C_HDR" ]]; then
+    echo "  ❌ 현재 트리($TARGET)에서 토큰/헤더를 하나도 찾지 못했습니다 — 추출이 깨졌습니다." >&2
+    echo "     토큰 $(printf '%s\n' "$_C_TOK" | grep -c . || true)종 · 헤더 $(printf '%s\n' "$_C_HDR" | grep -c . || true)종. 경로·패턴을 확인하세요." >&2
+    exit 2
+  fi
+
+  _ADD_TOK=$(LC_ALL=C comm -13 <(printf '%s\n' "$_P_TOK") <(printf '%s\n' "$_C_TOK") | grep -v '^$' || true)
+  _DEL_TOK=$(LC_ALL=C comm -23 <(printf '%s\n' "$_P_TOK") <(printf '%s\n' "$_C_TOK") | grep -v '^$' || true)
+  _ADD_HDR=$(LC_ALL=C comm -13 <(printf '%s\n' "$_P_HDR") <(printf '%s\n' "$_C_HDR") | grep -v '^$' || true)
+  _DEL_HDR=$(LC_ALL=C comm -23 <(printf '%s\n' "$_P_HDR") <(printf '%s\n' "$_C_HDR") | grep -v '^$' || true)
+
+  if [[ -z "$_ADD_TOK$_DEL_TOK$_ADD_HDR$_DEL_HDR" ]]; then
+    echo "  ✓ 통지 게이트: $PREV 대비 마커·토큰 변화 없음 (토큰 $(printf '%s\n' "$_C_TOK" | grep -c .)종 · 헤더 $(printf '%s\n' "$_C_HDR" | grep -c .)종 대조)"
+  else
+    echo "── 통지 게이트: $PREV → $TAG 마커 변화 ──"
+    [[ -n "$_ADD_TOK" ]] && { echo "  [추가] 토큰";            printf '%s\n' "$_ADD_TOK" | sed 's/^/    + /'; }
+    [[ -n "$_ADD_HDR" ]] && { echo "  [추가] 헤더";            printf '%s\n' "$_ADD_HDR" | sed 's/^/    + /'; }
+    [[ -n "$_DEL_TOK" ]] && { echo "  [변경·삭제] 토큰 ← **파괴적**"; printf '%s\n' "$_DEL_TOK" | sed 's/^/    - /'; }
+    [[ -n "$_DEL_HDR" ]] && { echo "  [변경·삭제] 헤더 ← **파괴적**"; printf '%s\n' "$_DEL_HDR" | sed 's/^/    - /'; }
+
+    if [[ -n "$_DEL_TOK$_DEL_HDR" ]]; then
+      echo "  ⚠️ 삭제·변경은 소비자를 깨뜨립니다. 계약상 **릴리스 전에** 통지해야 합니다." >&2
+    fi
+
+    if [[ "${NOTIFIED:-}" == "1" ]]; then
+      echo "  ✓ NOTIFIED=1 — 통지를 마쳤다고 선언했습니다. 진행합니다."
+    else
+      echo "  ❌ 통지가 필요합니다 — 릴리스를 중단합니다." >&2
+      echo "     1) ai-chat 에서 open_issue(channel='aiops-plugin', targetProject='aiops-codex', type='change')" >&2
+      echo "        위 목록과 이 태그($TAG)를 본문에 적는다." >&2
+      echo "     2) 통지 후 NOTIFIED=1 tools/release.sh $TAG 로 다시 실행." >&2
+      exit 1
+    fi
+  fi
+fi
+# <<< release:notify-gate <<<
+
 [[ -n "${DRY:-}" ]] && { echo "── DRY=1 — 아무것도 하지 않았습니다."; exit 0; }
 
 # >>> release:tag-or-skip >>>
