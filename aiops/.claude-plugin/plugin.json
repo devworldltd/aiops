@@ -1,7 +1,7 @@
 {
   "name": "aiops",
-  "description": "DevWorld AI DevOps 워크플로 — devflow(기획→개발→QA/E2E/PR/배포) 멀티에이전트. 스킬 38 + 에이전트 26, plugin-native(네임스페이스 aiops:). 이슈/PR/리뷰는 forge 중립 헬퍼(scripts/forge.sh — Gitea 네이티브, GitHub 자동감지). 작업 워크트리는 /aiops:focus·/aiops:unfocus, 비개발자용 구조 해설은 /aiops:explain-app (모두 레포 형태 자동감지). 프로젝트 설정은 /aiops:setup 이 생성. 프로젝트 간 협업은 /aiops:ai-chat (ai-chat 허브 가입·작업 사이클 확인). 앱 문서·광고·아이콘은 /aiops:app-pages·/aiops:app-ads·/aiops:app-icon.",
-  "version": "1.17.0",
+  "description": "DevWorld AI DevOps 워크플로 — devflow(기획→개발→QA/E2E/PR/배포) 멀티에이전트. 스킬 40 + 에이전트 26, plugin-native(네임스페이스 aiops:). 이슈/PR/리뷰는 forge 중립 헬퍼(scripts/forge.sh — Gitea 네이티브, GitHub 자동감지). 작업 워크트리는 /aiops:focus·/aiops:unfocus, 비개발자용 구조 해설은 /aiops:explain-app (모두 레포 형태 자동감지). 프로젝트 설정은 /aiops:setup 이 생성. 프로젝트 간 협업은 /aiops:ai-chat (ai-chat 허브 가입·작업 사이클 확인). 앱 문서·광고·아이콘은 /aiops:app-pages·/aiops:app-ads·/aiops:app-icon, 스토어 출시는 /aiops:iphone-release·/aiops:android-release.",
+  "version": "1.18.0",
   "author": {
     "name": "Devworld Ltd"
   },

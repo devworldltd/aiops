@@ -1,0 +1,194 @@
+---
+name: android-release
+description: "Android 앱을 Google Play 트랙에 올린다 — 신규 출시와 업데이트 모두. AAB 빌드·업로드·트랙 반영·릴리즈 노트·Data safety 설문을 자동화하고, 사람만 할 수 있는 것(개발자 계정·서비스 계정 발급·AdMob 콘솔·심사 반려 대응)에서는 HANDOFF 마커를 남기고 멈춘다. 업로드 키 분실은 복구 불가다."
+---
+
+# /aiops:android-release — Google Play 출시
+
+세션이 담당하는 앱 하나를 Google Play 에 올린다.
+
+설계 정본은 [`docs/design/release-skills.md`](../../../docs/design/release-skills.md),
+중단 상태 규약은 [`docs/contracts/handoff-marker.md`](../../../docs/contracts/handoff-marker.md) 다.
+
+## 절대 원칙
+
+1. **업로드 키를 잃으면 복구할 수 없다.** `android_keystore` 는 이 흐름에서 가장 위험한 항목이다.
+   **잘못된 키로 서명해 올리면 기존 등록의 서명과 달라지고 사후에 고칠 수 없는데,
+   업로드가 거부될 때까지 드러나지 않는다.**
+2. **불가역 단계를 격리한다.** 트랙 반영(`commit`)은 되돌릴 수 없다.
+3. **판정 실패 시 신규로 가정하지 않는다.**
+4. **사람 영역에서는 멈추고 마커를 남긴다.**
+5. **확인할 수 있는 것은 확인한다**(계약 규약 4).
+
+---
+
+## §1 인자
+
+```
+/aiops:android-release <slug> [--root=<경로>] [--portal=<경로>]
+                              [--track=internal|alpha|beta|production]
+                              [--dry-run] [--no-notes]
+```
+
+기본 트랙은 `internal` 이다. **`production` 은 명시해야 한다** — 즉시 사용자에게 나간다.
+
+`--dry-run` 은 편집 세션을 열었다 바로 버려 **아무것도 바꾸지 않고** 접근만 확인한다.
+
+## §2 전제 확인 (생략 금지)
+
+```bash
+PLATFORM=$(jq -r '.agent_hints.platform // ""' .claude/config.json 2>/dev/null)
+SIGNAL=$(jq -r '.agent_hints.platform_signal // "unknown"' .claude/config.json 2>/dev/null)
+```
+
+| 상태 | 처리 |
+|---|---|
+| `agent_hints.mobile` 없음 | `/aiops:setup` 을 먼저 돌린다. 여기서 중단 |
+| `platform_signal` 이 `none (fallback)` | **감지가 아무것도 찾지 못했다.** 사람 확인 |
+| `framework` 에 `android-native` 없음 | 이 스킬 대상이 아니다 |
+
+## §3 자격증명 — 범위가 둘로 갈린다
+
+| 항목 | scope | service |
+|---|---|---|
+| `PLAY_SERVICE_ACCOUNT_JSON` | `org` | `devworld` |
+| `ANDROID_KEYSTORE_BASE64` · `_PASSWORD` · `KEY_ALIAS` | `app` | `<슬러그>` |
+
+**서비스 계정은 조직 공용이고 키스토어는 앱별이다.** 조직 공용을 앱별로 두면 키 교체 시
+앱 수만큼 고쳐야 하고 일부만 갱신돼 조용히 갈린다. 키스토어는 반대로 앱마다 달라야 한다.
+
+### 값 형식 — JSON 원문 그대로다
+
+Play 서비스 계정은 **base64 가 아니라 JSON 원문 텍스트**로 보관한다.
+스크립트가 reveal 응답의 `.value` 를 **한 번 더 `json.loads`** 한다.
+KMS 가 객체로 파싱해 중첩시키거나 `private_key` 의 `\n` 을 정규화하면 거기서 깨진다.
+
+### 1·2순위에 값이 둘 다 있으면 조용히 고르지 않는다
+
+```
+지문이 같다    1순위 사용 + duplicate=identical 로 보고
+지문이 다르다  duplicate_conflict 로 중단 → HANDOFF_DECISION=keystore_conflict
+```
+
+지문은 SHA-256 앞 8자다. **값을 노출하지 않고 같은지만 비교**한다.
+키스토어에서 이 판정이 가장 중요하다(§절대 원칙 1).
+
+### KMS 가 막히면 브라우저로 확인한다 (설계 §2-6)
+
+`not_found` 는 미등록인지 권한 없음인지 구별하지 못한다. **Chrome 브라우저 도구**로
+Play Console 개발자 계정과 서비스 계정 존재를 확인한다.
+
+| 확인 | URL |
+|---|---|
+| 개발자 계정 | `play.google.com/console/developers` |
+| 서비스 계정 | `…/developers/<id>/users-and-permissions` — `@….iam.gserviceaccount.com` |
+| 키 생성 여부 | `console.cloud.google.com/iam-admin/serviceaccounts?project=<프로젝트>` |
+
+읽기 전용이다. 만들지 않고, 로그인하지 않으며, 끝나면 탭을 닫는다.
+
+> **GCP 에 키가 있다고 JSON 파일을 가지고 있다는 뜻은 아니다.** 비공개 부분은 생성 시점에
+> 한 번만 내려받을 수 있다. 그때 저장하지 않았으면 새 키를 만들어야 한다.
+
+## §4 신규 출시와 업데이트 판정
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/play_upload.py" --slug <slug> --root <root> --dry-run
+```
+
+| 결과 | 판정 |
+|---|---|
+| 편집 세션이 열림 | **업데이트** — 버전 코드 증가, 변경된 것만 |
+| HTTP 404 | **신규** — Play Console 에 앱 레코드가 없다 |
+| HTTP 401 | 인증 실패 — 서비스 계정 키 확인 |
+| HTTP 403 | 권한 없음 — 앱 권한 또는 API 사용 설정 |
+| 그 밖의 실패 | **중단.** 신규로 가정하지 않는다 |
+
+앱 레코드 생성은 이 스킬이 하지 않는다. `HANDOFF_REQUIRED=app_record` 를 남기고 멈춘다.
+
+## §5 사전 점검
+
+| 점검 | 방법 | 실패 시 |
+|---|---|---|
+| 개인정보처리방침 URL | `app.devworld.co.kr/<slug>/privacy` 가 200 | `HANDOFF_REQUIRED=privacy_policy_not_published` |
+| AAB 존재·서명 | `build/outputs/bundle/release/*.aab` | `./gradlew bundleRelease` 안내 |
+| 앱 이름 가용성 | Play Console 조회 | `HANDOFF_DECISION=app_name_conflict` |
+| 대상 연령층 | config 값 | `HANDOFF_DECISION=age_rating_decision` |
+| 가격·배포 국가 | config 값 | `HANDOFF_DECISION=price_and_territories` |
+| AdMob 유럽 규정 메시지 | 확인 불가 | `HANDOFF_REQUIRED=admob_eu_message` |
+
+**AdMob 유럽 규정 메시지가 없으면 릴리스 빌드에서 EEA 동의 폼이 뜨지 않는다.**
+콘솔에서만 만들 수 있어 이 스킬이 할 수 없다.
+
+## §6 릴리즈 노트
+
+`app-portal` 의 `content/<slug>/releases.json` 에서 읽는다 — **`/aiops:app-pages` 가 만드는
+그 파일**이다. 정본이 하나로 이어진다.
+
+`platforms.android` 가 채워진 최신 릴리스의 `changes` 를 쓴다.
+`--portal` 로 경로를 준다. 없으면 노트 없이 진행하고 그 사실을 보고한다.
+
+## §7 업로드 — 불가역 경계
+
+```bash
+S="${CLAUDE_PLUGIN_ROOT}/scripts/play_upload.py"
+python3 "$S" --slug <slug> --root <root> --dry-run              # 되돌릴 수 있음
+python3 "$S" --slug <slug> --root <root> --track internal       # **트랙 반영. 되돌릴 수 없음**
+```
+
+`commit` 전에 **사람 확인을 받는다.** `--track production` 은 즉시 사용자에게 나간다.
+
+## §8 연령 3축 — 이 스킬이 다루는 둘
+
+| 축 | Play |
+|---|---|
+| 콘텐츠 등급 | IARC 설문 |
+| 대상 연령층 | 5세 미만 · 6-8 · 9-12 · **13-15** · 16-17 · 18+ |
+| 아동 대상 태그 | `/aiops:app-ads` 가 다룬다 |
+
+**14+ 버킷이 없다.** 한국 개인정보보호법의 14세 기준과 어긋나는 회색지대다 —
+`13-15` 를 포함해 13세 이상으로 가거나 `16-17` 부터 시작하거나 둘 중 하나다.
+
+13세 미만을 포함하지 않으면 Families 정책 대상이 아니므로 개인화 광고가 가능하다.
+**EEA·영국은 나이와 무관하게 UMP 동의 결과가 개인화를 가른다.**
+
+값은 프로젝트 설정으로 받는다. **이 스킬은 법률 자문을 하지 않는다.**
+
+## §9 API 호출 3등급
+
+| 등급 | 예 | 정책 |
+|---|---|---|
+| 1 조회 | 앱 존재·현재 버전 코드 | 자유 |
+| 2 멱등 갱신 | 메타데이터·스크린샷·릴리즈 노트·AAB 업로드 | 자유 |
+| 3 **불가역** | `edits.commit()` · 트랙 반영 | **사람 확인 필수** |
+
+AAB 업로드 자체는 편집 세션 안이라 `commit` 전에는 되돌릴 수 있다 — 세션을 버리면 된다.
+**`commit` 이 경계다.**
+
+## §10 사람이 해야 할 일 (보고에 반드시 포함)
+
+- 개발자 계정 생성, 서비스 계정 발급 + Play Console 권한 부여
+- **업로드 키 생성·보관** — 분실하면 복구 불가
+- **AdMob 콘솔 유럽 규정 메시지 생성**
+- 앱 레코드 생성, 심사 반려 대응
+- **연령 등급·개인화 설정 법무 검토**
+
+## §11 결과 보고
+
+```
+## 🤖 Android 출시 결과 — <slug>
+- 경로: 신규 | 업데이트     트랙: <track>     versionCode: <n>
+- 사전 점검: <통과/실패 항목>
+- 자격증명: <name>@<service> (legacy·duplicate 면 명시)
+- 릴리즈 노트: <있음/없음 + 출처>
+- HANDOFF: <남긴 마커. 없으면 "없음">
+- 사람이 할 일: §10 목록 중 해당 항목
+```
+
+**`commit` 을 실행했으면 그 사실을 맨 앞에 적는다.**
+
+## 다른 스킬과의 관계
+
+- 문서 4종은 [`/aiops:app-pages`](../app-pages/SKILL.md) — **배포가 이 스킬보다 먼저다**
+- 광고·아이콘은 `/aiops:app-ads` · `/aiops:app-icon`
+- 자격증명 조회는 `scripts/store_common.py`, 업로드는 `scripts/play_upload.py`
+- iOS 는 `/aiops:iphone-release`
