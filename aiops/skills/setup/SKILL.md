@@ -20,7 +20,7 @@ description: "설치 후 프로젝트 파일 분석 → tech_stack 감지 + 프�
 | `requirements.txt` 또는 `pyproject.toml` | `python` |
 | `go.mod` | `go` |
 | `Cargo.toml` | `rust` |
-| `pom.xml` 또는 `build.gradle` | `java` |
+| `pom.xml` 또는 `build.gradle(.kts)` | `java` |
 | `Gemfile` | `ruby` |
 | `composer.json` | `php` |
 | `*.csproj` 또는 `*.sln` | `dotnet` |
@@ -31,11 +31,15 @@ find . -maxdepth 3 -name "package.json" ! -path "*/node_modules/*" -print -quit 
 find . -maxdepth 3 \( -name "requirements.txt" -o -name "pyproject.toml" \) ! -path "*/node_modules/*" -print -quit 2>/dev/null
 find . -maxdepth 3 -name "go.mod" -print -quit 2>/dev/null
 find . -maxdepth 3 -name "Cargo.toml" -print -quit 2>/dev/null
-find . -maxdepth 3 \( -name "pom.xml" -o -name "build.gradle" \) -print -quit 2>/dev/null
+find . -maxdepth 3 \( -name "pom.xml" -o -name "build.gradle" -o -name "build.gradle.kts" \) -print -quit 2>/dev/null
 find . -maxdepth 3 -name "Gemfile" ! -path "*/node_modules/*" -print -quit 2>/dev/null
 find . -maxdepth 3 -name "composer.json" ! -path "*/node_modules/*" -print -quit 2>/dev/null
 find . -maxdepth 3 \( -name "*.csproj" -o -name "*.sln" \) -print -quit 2>/dev/null
 ```
+
+> `build.gradle.kts` 를 포함하는 이유는 Kotlin DSL 만 쓰는 레포에서 `java` 가 누락되던 것을
+> 막기 위해서다. **이 변경이 `platform` 판정을 바꾸지는 않는다** — §15-1 에서 Gradle·Maven 은
+> 웹 신호가 아니기 때문이다(Android 도 Gradle 을 쓴다).
 
 ### 2. 추가 분석 (package.json 존재 시)
 
@@ -645,6 +649,93 @@ if find . -maxdepth 3 -name "pubspec.yaml" -print -quit 2>/dev/null | grep -q .;
 fi
 ```
 
+### 15-1. platform 신호 계산 — `WEB_DETECTED` · `MOBILE_DETECTED`
+
+§16 의 판정은 이 두 값에서 출발한다. **산문이 아니라 코드로 계산한다** — 앞 절의 "§1~§3·§7 결과"
+같은 참조에 기대면 실행 주체의 해석에 따라 같은 레포가 `web`·`mobile`·`both` 로 갈린다.
+
+#### `MOBILE_DETECTED`
+
+§15 의 네 플래그(`ANDROID_DETECTED`·`IOS_DETECTED`·`RN_DETECTED`·`FLUTTER_DETECTED`)의 **OR** 이다.
+
+#### `WEB_DETECTED` — Gradle·Maven 단독은 웹 신호가 아니다
+
+§1 의 `java` 감지(`build.gradle`·`pom.xml`)를 그대로 웹 신호로 쓰면 **Android 레포가 전부 `both` 가 된다.**
+Android 도 Gradle 을 쓰기 때문이다. 웹 신호는 다음 둘 중 하나여야 한다.
+
+| 신호 | 근거 |
+|---|---|
+| **웹 프레임워크 의존성** | §7 의 식별자 — `hono`·`next`·`react`·`vue`·`svelte`·`astro`·`express`·`fastify`·`koa`·`@nestjs/core`·`@remix-run/*`·`nuxt` / `fastapi`·`django`·`flask`·`starlette`·`litestar` / `gin`·`echo`·`fiber` / `actix-web`·`axum`·`rocket` |
+| **웹 배포 매니페스트** | `wrangler.toml`·`wrangler.jsonc`·`vercel.json`·`netlify.toml`·`fly.toml`·`serverless.yml` (루트만) |
+
+`react` 는 `"react":` 로 키를 정확히 본다. `react-native` 에 `react` 가 부분 문자열로 들어 있어
+**앵커 없이 찾으면 RN 레포가 웹으로 잡힌다** — v1.11.0 의 `PASS_DRY_RUN` 과 같은 부류다.
+
+```bash
+# >>> setup:platform-signals >>>
+# WEB_DETECTED · MOBILE_DETECTED 를 파일시스템에서 직접 계산한다.
+# 선행 변수(선택): §15 의 ANDROID_DETECTED·IOS_DETECTED·RN_DETECTED·FLUTTER_DETECTED.
+#                  없으면 false 로 보고 웹 신호만으로 판정한다.
+# bash 3.2 준수. 이 블록은 아무것도 출력하지 않아도 두 변수를 반드시 정의한다.
+
+MOBILE_DETECTED=false; MOBILE_SIGNAL=""
+for _pair in "android:${ANDROID_DETECTED:-false}" "ios:${IOS_DETECTED:-false}" \
+             "rn:${RN_DETECTED:-false}" "flutter:${FLUTTER_DETECTED:-false}"; do
+  if [ "${_pair#*:}" = "true" ]; then
+    MOBILE_DETECTED=true
+    MOBILE_SIGNAL="${MOBILE_SIGNAL:+$MOBILE_SIGNAL+}${_pair%%:*}"
+  fi
+done
+
+WEB_DETECTED=false; WEB_SIGNAL=""
+
+# (1) 웹 배포 매니페스트 — 루트만 본다
+for _m in wrangler.toml wrangler.jsonc vercel.json netlify.toml fly.toml serverless.yml; do
+  [ -f "$_m" ] && { WEB_DETECTED=true; WEB_SIGNAL="$_m"; break; }
+done
+
+# (2) 웹 프레임워크 의존성
+_ps_find() {   # $1=maxdepth, $2..=-name 조건
+  local d="$1"; shift
+  find . -maxdepth "$d" \
+    \( -name node_modules -o -name .git -o -name build -o -name Pods -o -name DerivedData \) -prune -o \
+    \( "$@" \) -type f -print 2>/dev/null
+}
+
+if [ "$WEB_DETECTED" = "false" ]; then
+  # Node — 키를 "이름": 형태로 정확히 본다.
+  for _f in $(_ps_find 3 -name 'package.json'); do
+    # react 는 **단독일 때만** 웹 신호다(§7 표). React Native 는 react 를 반드시 의존하므로
+    # 같은 파일에 react-native 가 있으면 react 를 웹 신호로 세지 않는다.
+    _web_keys='hono|next|nuxt|vue|svelte|@sveltejs/kit|astro|express|fastify|koa|@nestjs/core'
+    grep -qE '"react-native"[[:space:]]*:' "$_f" 2>/dev/null || _web_keys="$_web_keys|react"
+    _hit="$(grep -oE "\"($_web_keys)\"[[:space:]]*:" "$_f" 2>/dev/null | head -1 | tr -d '":[:space:]')"
+    [ -z "$_hit" ] && grep -qE '"@remix-run/' "$_f" 2>/dev/null && _hit="@remix-run"
+    if [ -n "$_hit" ]; then
+      WEB_DETECTED=true; WEB_SIGNAL="${_f#./}:$_hit"; break
+    fi
+  done
+fi
+
+if [ "$WEB_DETECTED" = "false" ]; then
+  # Python · Go · Rust
+  for _f in $(_ps_find 3 -name 'requirements.txt' -o -name 'pyproject.toml' -o -name 'go.mod' -o -name 'Cargo.toml'); do
+    _hit="$(grep -oiE '(fastapi|django|flask|starlette|litestar|gin-gonic/gin|labstack/echo|gofiber/fiber|actix-web|axum|rocket)' "$_f" 2>/dev/null | head -1)"
+    if [ -n "$_hit" ]; then
+      WEB_DETECTED=true; WEB_SIGNAL="${_f#./}:$_hit"; break
+    fi
+  done
+fi
+
+echo "[setup] §15-1 web=$WEB_DETECTED(${WEB_SIGNAL:-none}) mobile=$MOBILE_DETECTED(${MOBILE_SIGNAL:-none})"
+# <<< setup:platform-signals <<<
+```
+
+앵커 문자열은 `aiops/tests/setup-platform-signals.test.sh` 의 추출 지점이므로 변경 금지.
+
+**실행 순서**: §15(모바일 플래그) → **§15-1(신호 계산)** → §16(platform 판정). §16 의 앵커는 이 두
+값을 입력으로 받는다.
+
 ### 16. platform 결정 로직
 
 웹 스택 감지 여부(§1~§3 결과)와 모바일 감지 여부(§15)를 조합하여 `platform` 값을 결정한다.
@@ -668,7 +759,9 @@ CLI 판정을 무효화하는 것은 **웹 호스팅 매니페스트만**이다:
 
 ```bash
 # >>> setup:platform-detect >>>
-# 선행 변수(앵커 밖): WEB_DETECTED(§1~§3·§7), MOBILE_DETECTED(§15) — "true"|"false"
+# 선행 변수: WEB_DETECTED · MOBILE_DETECTED — **§15-1 앵커가 계산한다.**
+# 기본값은 안전망일 뿐이다. §15-1 을 실행하지 않으면 둘 다 false 가 되어 platform=web 으로
+# 떨어진다 — 모바일 레포가 조용히 web 으로 판정되므로 §15-1 을 건너뛰지 않는다.
 WEB_DETECTED="${WEB_DETECTED:-false}"; MOBILE_DETECTED="${MOBILE_DETECTED:-false}"
 HAS_BIN=false                      # (1) package.json bin — 빈 객체 {} 는 미판정
 if [[ -f package.json ]]; then
@@ -684,17 +777,38 @@ HAS_WEB_DEPLOY_MANIFEST=false      # (2) 웹 호스팅 매니페스트 (Dockerfi
 for _m in wrangler.toml wrangler.jsonc vercel.json netlify.toml fly.toml serverless.yml; do
   [[ -f "$_m" ]] && { HAS_WEB_DEPLOY_MANIFEST=true; break; }
 done
-if   [[ "$WEB_DETECTED" == "true" && "$MOBILE_DETECTED" == "true" ]]; then PLATFORM="both"
-elif [[ "$MOBILE_DETECTED" == "true" ]]; then PLATFORM="mobile"
-elif [[ "$WEB_DETECTED" == "true" ]];    then PLATFORM="web"
-elif [[ "$HAS_BIN" == "true" && "$HAS_WEB_DEPLOY_MANIFEST" == "false" ]]; then PLATFORM="cli"
-else PLATFORM="web"
+# PLATFORM_SIGNAL — **무엇이 판정했는가.** "신호로 판정" 과 "기본값으로 떨어짐" 은 다르다.
+# 후자는 감지가 아무것도 못 찾았다는 뜻이며 사람이 한 번 봐야 하는 상태다.
+if   [[ "$WEB_DETECTED" == "true" && "$MOBILE_DETECTED" == "true" ]]; then
+  PLATFORM="both";   PLATFORM_SIGNAL="${WEB_SIGNAL:-?} + ${MOBILE_SIGNAL:-?}"
+elif [[ "$MOBILE_DETECTED" == "true" ]]; then
+  PLATFORM="mobile"; PLATFORM_SIGNAL="${MOBILE_SIGNAL:-?}"
+elif [[ "$WEB_DETECTED" == "true" ]]; then
+  PLATFORM="web";    PLATFORM_SIGNAL="${WEB_SIGNAL:-?}"
+elif [[ "$HAS_BIN" == "true" && "$HAS_WEB_DEPLOY_MANIFEST" == "false" ]]; then
+  PLATFORM="cli";    PLATFORM_SIGNAL="package.json:bin"
+else
+  PLATFORM="web";    PLATFORM_SIGNAL="none (fallback)"
 fi
-echo "[setup] §16 platform=$PLATFORM (web=$WEB_DETECTED mobile=$MOBILE_DETECTED bin=$HAS_BIN web_manifest=$HAS_WEB_DEPLOY_MANIFEST)"
+echo "[setup] §16 platform=$PLATFORM signal=$PLATFORM_SIGNAL (web=$WEB_DETECTED mobile=$MOBILE_DETECTED bin=$HAS_BIN web_manifest=$HAS_WEB_DEPLOY_MANIFEST)"
+[[ "$PLATFORM_SIGNAL" == "none (fallback)" ]] && \
+  echo "[setup] §16 ⚠️ 신호 없이 기본값으로 판정했습니다 — 감지가 아무것도 찾지 못했습니다. 사람이 확인하세요."
 # <<< setup:platform-detect <<<
 ```
 
 앵커 문자열은 `aiops/tests/setup-platform-detect.test.sh` 의 추출 지점이므로 변경 금지. bash 3.2 준수(연관배열·`${v,,}`·`mapfile` 미사용), jq 부재 시 grep 폴백은 `"bin"[[:space:]]*:` 키 패턴만 확인한다(오탐 방지를 위한 값 검사는 하지 않음 — jq 가용 환경을 권장).
+
+### 판정 근거를 남긴다 — "판정됨" 과 "기본값으로 떨어짐" 은 다르다
+
+§16 표의 마지막 행(웹X·모바일X·bin X)은 **안전 기본값**이지 판정이 아니다. 결과만 보면
+신호로 `web` 이 된 레포와 구별되지 않아 **감지가 제대로 됐는지 아무도 모른다.**
+
+```
+platform=web  signal=apps/blog/package.json:hono   ← 신호로 판정
+platform=web  signal=none (fallback)               ← 기본값. 사람이 봐야 한다
+```
+
+뒤의 경우에는 경고를 함께 출력한다. HANDOFF 계약의 "확인됨 / 확인했다고 함" 구분과 같은 논리다.
 
 `mobile.framework` 값 결정 (다중 가능 → 배열):
 
