@@ -92,15 +92,18 @@ ALIAS="<slug>-upload"
 
 keytool -genkeypair -v \
   -keystore "$KS" -storetype PKCS12 \
-  -keyalg RSA -keysize 2048 -validity 10000 \
+  -keyalg RSA -keysize 4096 -sigalg SHA384withRSA -validity 10000 \
   -alias "$ALIAS" \
   -storepass "$PW" -keypass "$PW" \
   -dname "CN=<앱 이름>, O=<조직>, C=KR"
 ```
 
 - `PKCS12` 를 쓴다. JKS 는 폐기 예정 형식이다
-- `-validity 10000`(약 27년). **Play 는 업로드 키에 충분히 긴 유효기간을 요구한다** —
-  만료되면 그 키로 더 올릴 수 없다
+- **`-keysize 4096`.** 2048 은 관행적 하한일 뿐이다. 이 키는 27년을 쓰는 물건이고 교체가
+  수월하지 않으므로 상한을 쓴다. zen-koi 가 RSA 4096 / SHA384withRSA 로 만들어
+  Play 요건을 넘기는 것을 실측했다(2026-09-20)
+- `-validity 10000`(약 27년). **Play 는 업로드 키에 충분히 긴 유효기간을 요구한다**
+  (2033-10-22 이후 만료). 만료되면 그 키로 더 올릴 수 없다
 - `storepass` 와 `keypass` 를 같게 둔다. PKCS12 는 분리를 지원하지 않는다
 
 #### KMS 등록 — 3종을 함께
@@ -217,7 +220,8 @@ python3 "${CLAUDE_PLUGIN_ROOT}/scripts/play_upload.py" --slug <slug> --root <roo
 | 점검 | 방법 | 실패 시 |
 |---|---|---|
 | 개인정보처리방침 URL | `app.devworld.co.kr/<slug>/privacy` 가 200 | `HANDOFF_REQUIRED=privacy_policy_not_published` |
-| AAB 존재·서명 | `build/outputs/bundle/release/*.aab` | `./gradlew bundleRelease` 안내 |
+| AAB 존재 | `build/outputs/bundle/release/*.aab` | `./gradlew bundleRelease` 안내 |
+| **AAB 서명** | §5-1 게이트 — `META-INF/*.RSA` | 중단. 업로드하지 않는다 |
 | 앱 이름 가용성 | Play Console 조회 | `HANDOFF_DECISION=app_name_conflict` |
 | 대상 연령층 | config 값 | `HANDOFF_DECISION=age_rating_decision` |
 | 가격·배포 국가 | config 값 | `HANDOFF_DECISION=price_and_territories` |
@@ -225,6 +229,58 @@ python3 "${CLAUDE_PLUGIN_ROOT}/scripts/play_upload.py" --slug <slug> --root <roo
 
 **AdMob 유럽 규정 메시지가 없으면 릴리스 빌드에서 EEA 동의 폼이 뜨지 않는다.**
 콘솔에서만 만들 수 있어 이 스킬이 할 수 없다.
+
+### §5-1 서명 게이트 — 빌드 성공은 서명의 증거가 아니다
+
+`build.gradle.kts` 가 `keystore.properties` → 환경변수 순으로 읽고 **둘 다 없으면 서명 없이
+빌드되는** 구조가 흔하다(zen-koi·pong 실측). 새 클론이나 CI 의 일반 작업에서도 빌드는 되어야
+하므로 일부러 그렇게 둔 것이다.
+
+즉 **`bundleRelease` 가 성공해도 서명되지 않았을 수 있다.** 파일 존재만 보는 점검은 그 경우를
+통과시킨다. 서명 없는 AAB 는 업로드가 거부되므로 불가역 사고는 아니지만, 실패가 자격증명
+조회·릴리즈 노트·편집 세션 개설을 **다 지나서** 나온다. 앞으로 당긴다.
+
+```bash
+# >>> android-release:signing-gate >>>
+# AAB 서명 게이트. 종료 코드 0=서명됨 1=서명 없음 2=검사불가.
+# **"열지 못했다" 를 "서명 없음" 으로 판정하지 않는다** — 그 둘은 다른 처방이 필요하다.
+_sig_aab="${1:-}"
+if [ -z "$_sig_aab" ]; then
+  # 글롭은 인용한다 — 비인용이면 zsh 에서 "no matches found" 로 죽어 게이트가 사라진다.
+  _sig_aab=$(find . -path '*/build/outputs/bundle/release/*.aab' -type f 2>/dev/null | head -1)
+fi
+if [ -z "$_sig_aab" ] || [ ! -f "$_sig_aab" ]; then
+  echo "❌ AAB 를 찾지 못했습니다 — ./gradlew bundleRelease 를 먼저 실행하세요."
+  exit 2
+fi
+
+command -v unzip >/dev/null 2>&1 || {
+  echo "❌ unzip 이 없어 서명을 확인하지 못했습니다(검사 불가)."; exit 2; }
+
+_sig_list=$(unzip -Z1 "$_sig_aab" 2>/dev/null)
+_sig_rc=$?
+if [ "$_sig_rc" -ne 0 ] || [ -z "$_sig_list" ]; then
+  echo "❌ AAB 를 열지 못했습니다(손상·zip 아님) — 서명 여부를 판정할 수 없습니다: $_sig_aab"
+  exit 2
+fi
+
+_sig_hit=$(printf '%s\n' "$_sig_list" | grep -E '^META-INF/[^/]+\.(RSA|DSA|EC)$')
+if [ -z "$_sig_hit" ]; then
+  echo "❌ 서명 블록이 없습니다 — 서명되지 않은 AAB: $_sig_aab"
+  echo "   keystore.properties 도 서명 환경변수도 없으면 Gradle 은 조용히 서명 없이 빌드합니다."
+  exit 1
+fi
+
+printf '%s\n' "$_sig_hit"
+echo "✅ 서명 확인 (AAB 항목 $(printf '%s\n' "$_sig_list" | wc -l | tr -d ' ')개)"
+# <<< android-release:signing-gate <<<
+```
+
+**종료 코드 2 를 0 으로 뭉개지 않는다.** AAB 를 열지 못한 것과 서명이 확인된 것은 다르다 —
+이 구분이 §3-1 왕복 검증·`app-ads` 광고 ID 게이트와 같은 규약이다.
+
+> 서명 여부만 본다. **어느 키로 서명됐는지는 보지 않는다.** 그것은 Play 업로드가 거부로
+> 알려 주며, 여기서 판정하려면 업로드 키 인증서가 필요하다(§3-1).
 
 ## §6 릴리즈 노트
 
