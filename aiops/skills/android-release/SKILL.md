@@ -238,10 +238,111 @@ python3 "${CLAUDE_PLUGIN_ROOT}/scripts/play_upload.py" --slug <slug> --root <roo
 | 개인정보처리방침 URL | §5-1 게이트 — **리다이렉트를 따라간** 최종 상태 | `HANDOFF_REQUIRED=privacy_policy_not_published` |
 | AAB 존재 | `build/outputs/bundle/release/*.aab` | `./gradlew bundleRelease` 안내 |
 | **AAB 서명** | §5-1 게이트 — `META-INF/*.RSA` | 중단. 업로드하지 않는다 |
+| **대상 API 수준** | §5-2 게이트 — AAB 의 `targetSdkVersion` | 중단. 업로드하지 않는다 |
 | 앱 이름 가용성 | Play Console 조회 | `HANDOFF_DECISION=app_name_conflict` |
 | 대상 연령층 | config 값 | `HANDOFF_DECISION=age_rating_decision` |
 | 가격·배포 국가 | config 값 | `HANDOFF_DECISION=price_and_territories` |
 | AdMob 유럽 규정 메시지 | 확인 불가 | `HANDOFF_REQUIRED=admob_eu_message` |
+
+
+### §5-2 대상 API 수준 게이트 — 불가역 경계 **앞**에서 막는다
+
+미달이면 `edits.commit` 이 거부한다. 그 전까지는 다 된다 — 편집 세션이 열리고, **AAB 가 업로드되고**,
+트랙까지 반영된 뒤 마지막에 실패한다. 되돌아가기는 하지만(커밋 실패라 세션이 버려진다) 6MB 업로드를
+다 하고 나서 멈춘다. 로컬에서 끝낼 수 있는 판정이다(zen-koi #37).
+
+**Google 의 거부 메시지가 오진을 부른다.**
+
+```
+"Target SDK of artifact is too low: 1."
+```
+
+`1` 은 versionCode 처럼 보이고, **실제 값도 요구 값도 메시지에 없다.** zen-koi 는 versionCode 가
+실제로 1이라 그쪽을 먼저 의심했다. 그래서 이 게이트는 **둘 다 출력한다.**
+
+#### 요구 수준 — 신규와 업데이트가 같다
+
+> 2026년 8월 31일부터: **새 앱과 앱 업데이트는** Android 16(API 수준 36) 이상을 타겟팅해야
+> Google Play에 제출할 수 있습니다.
+
+**제출 기준은 신규·업데이트가 같다.** 자주 헷갈리는 35 는 다른 요건이다 —
+"앱 제공 가능 요건"(기존 앱이 35 미만이면 **최신 OS 기기의 신규 사용자에게 노출되지 않는다**)이지
+제출을 막는 기준이 아니다. **둘을 섞으면 35짜리 업데이트를 통과시키고 커밋에서 실패한다.**
+
+폼 팩터마다 다르다. 기본값은 모바일이다.
+
+| 폼 팩터 | 제출 요구 (2026-08-31~) |
+|---|---|
+| 모바일 · Android Auto | **36** |
+| Wear OS · Automotive | 35 |
+| Android TV · XR | 34 |
+
+```bash
+# >>> android-release:target-sdk >>>
+# 대상 API 수준 게이트. 종료 코드 0=충족 1=미달 2=검사 불가.
+# 출처: https://support.google.com/googleplay/android-developer/answer/11926878
+#   **요구 수준은 매년 오른다.** 날짜 기준을 코드에 박지 않고 상수로 둔다 —
+#   하드코딩한 숫자가 조용히 낡는 것이 이 항목의 실패 방식이다.
+_TSDK_REQUIRED="${ANDROID_TARGET_SDK_REQUIRED:-36}"   # 모바일·Android Auto 기본값
+_TSDK_AAB="${1:-}"
+if [ -z "$_TSDK_AAB" ]; then
+  _TSDK_AAB=$(find . -path '*/build/outputs/bundle/release/*.aab' -type f 2>/dev/null | head -1)
+fi
+if [ -z "$_TSDK_AAB" ] || [ ! -f "$_TSDK_AAB" ]; then
+  echo "❌ AAB 를 찾지 못했습니다 — 대상 API 수준을 판정할 수 없습니다."
+  exit 2
+fi
+
+# **빌드 설정이 아니라 AAB 에서 읽는다.** build.gradle.kts 를 고치고 다시 빌드하지 않은
+#   경우를 잡아야 한다 — §5-1 의 "빌드 성공은 서명의 증거가 아니다" 와 같은 논리다.
+_TSDK_VAL=$(python3 - "$_TSDK_AAB" <<'PYEOF'
+import sys, zipfile
+# AAB 의 base/manifest/AndroidManifest.xml 은 protobuf(aapt.pb.XmlNode) 다.
+# 속성은 [field2=name][field3=value(문자열)] 로 이어진다. 그 구조만 읽는다.
+try:
+    with zipfile.ZipFile(sys.argv[1]) as z:
+        raw = z.read("base/manifest/AndroidManifest.xml")
+except Exception as e:
+    print("ERR:열지 못함 %s" % e); raise SystemExit(0)
+key = b"targetSdkVersion"
+i = raw.find(b"" + bytes([len(key)]) + key)
+if i < 0:
+    print("ERR:targetSdkVersion 속성이 없음"); raise SystemExit(0)
+j = i + 2 + len(key)
+if j >= len(raw) or raw[j] != 0x1A:          # field 3 (value), wiretype 2
+    print("ERR:value 필드 구조가 예상과 다름"); raise SystemExit(0)
+n = raw[j + 1]
+val = raw[j + 2 : j + 2 + n].decode("utf-8", "replace")
+# 리소스 참조(@integer/...)면 숫자가 아니다. **추측하지 않는다.**
+print(val if val.isdigit() else "ERR:숫자가 아님(%s)" % val)
+PYEOF
+)
+
+case "$_TSDK_VAL" in
+  ERR:*)
+    echo "❌ AAB 에서 대상 API 수준을 읽지 못했습니다 — ${_TSDK_VAL#ERR:}"
+    echo "   **미달로 단정하지 않습니다.** 판정할 수 없다는 뜻입니다."
+    exit 2 ;;
+  "")
+    echo "❌ 대상 API 수준 추출이 빈 값을 냈습니다 — 판정할 수 없습니다."
+    exit 2 ;;
+esac
+
+if [ "$_TSDK_VAL" -lt "$_TSDK_REQUIRED" ]; then
+  # **요구 값과 실제 값을 둘 다 보여준다.** Google 메시지에는 둘 다 없다.
+  echo "❌ 대상 API 수준 미달 — AAB 는 $_TSDK_VAL, 제출에는 $_TSDK_REQUIRED 이상이 필요합니다."
+  echo "   AAB: $_TSDK_AAB"
+  echo "   build.gradle.kts 의 targetSdk 를 올리고 **다시 빌드**하세요 — 설정만 고치면 이 게이트가 또 잡습니다."
+  echo "   폼 팩터가 모바일이 아니면 ANDROID_TARGET_SDK_REQUIRED 로 조정하세요(Wear/Automotive 35 · TV/XR 34)."
+  exit 1
+fi
+
+echo "✅ 대상 API 수준 $_TSDK_VAL (요구 $_TSDK_REQUIRED 이상)"
+# <<< android-release:target-sdk <<<
+```
+
+**미달과 "읽지 못함" 을 구별한다.** 리소스 참조로 지정된 경우처럼 숫자를 확정할 수 없으면 종료
+코드 2 다 — `app-ads` 광고 ID · §5-1 서명 · §3-1 왕복 검증과 같은 규약이다.
 
 **`--portal` 을 빠뜨리면 릴리즈 노트가 만들어지지 않는다.** `release_notes()` 가 즉시 빠져나가고,
 v1.20.0 까지는 그것이 `ℹ️` 한 줄로만 나와 **노트 없는 AAB 가 성공으로 올라갔다**(zen-koi #33).
